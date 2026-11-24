@@ -2,13 +2,13 @@ import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { CardBack, PlayingCard } from "@/components/PlayingCard";
 import { SUIT_SYMBOL, isRed } from "@/lib/api";
-import { relOf } from "@/components/game/TableParts";
+import { relOf } from "@/components/game/TableLayout";
 
 const TARGET = [{ x: 0, y: "40vh" }, { x: "40vw", y: 0 }, { x: 0, y: "-28vh" }, { x: "-40vw", y: 0 }];
 
 export function DealLayer({ flying, mySeat, dealing }) {
   return (
-    <div className="absolute left-1/2 top-[44%] sm:top-[42%] z-30 pointer-events-none" data-testid="deal-layer">
+    <div className="absolute left-1/2 top-1/2 z-30 pointer-events-none" data-testid="deal-layer">
       <AnimatePresence>
         {dealing && (
           <motion.div key="deck" className="absolute -ml-[22px] -mt-8" initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: 0.8 }} data-testid="deal-deck">
@@ -35,11 +35,13 @@ function TenFlight({ card, team }) {
   const [to, setTo] = useState(null);
   useEffect(() => {
     const r = document.querySelector(`[data-testid=tens-counter-team-${team === 0 ? "a" : "b"}]`)?.getBoundingClientRect();
-    setTo(r ? { x: r.right - 20 - window.innerWidth / 2, y: r.top + r.height / 2 - window.innerHeight * 0.42 } : { x: -300, y: -300 });
+    const c = document.querySelector("[data-testid=center-trick-area]")?.getBoundingClientRect();
+    const sx = c ? c.left + c.width / 2 : window.innerWidth / 2, sy = c ? c.top + c.height / 2 : window.innerHeight / 2;
+    setTo({ sx, sy, x: r ? r.left + r.width / 2 - sx : -300, y: r ? r.top + r.height / 2 - sy : -300 });
   }, [team]);
   if (!to) return null;
   return (
-    <motion.div className="fixed left-1/2 top-[42%] z-50 pointer-events-none -ml-7 -mt-10" data-testid={`ten-flight-${card}`}
+    <motion.div className="fixed z-50 pointer-events-none -ml-7 -mt-10" style={{ left: to.sx, top: to.sy }} data-testid={`ten-flight-${card}`}
       initial={{ x: 0, y: 0, scale: 1.3, opacity: 1 }}
       animate={{ x: [0, 0, to.x], y: [0, -10, to.y], scale: [1.3, 1.35, 0.3], opacity: [1, 1, 0.3] }}
       transition={{ duration: 1, times: [0, 0.3, 1], ease: "easeInOut" }}>

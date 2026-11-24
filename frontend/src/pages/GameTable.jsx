@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { Menu, MessageCircle, Wifi, WifiOff, History as HistoryIcon, LogOut, Home, Volume2, Flag } from "lucide-react";
+import { Menu, MessageCircle, History as HistoryIcon, LogOut, Home, Volume2, Flag, SunMoon } from "lucide-react";
 import { MotionConfig } from "framer-motion";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -12,12 +12,11 @@ import { sound } from "@/lib/sound";
 import { useApp, useSocketEvent } from "@/context/AppContext";
 import { errMsg, TEAM_NAME } from "@/lib/api";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Seat, TrickArea } from "@/components/game/TableParts";
-import { Hand, Scoreboard, TrumpBadge } from "@/components/game/HandAndHud";
+import { Hud, SeatPanel, TrickSlots, FanHand } from "@/components/game/TableLayout";
+import { useTheme } from "next-themes";
 import { Banner, TrumpSelector, KothPrompt, GrandSlamPrompt, RoundResult, MatchOver } from "@/components/game/Overlays";
 import { ChatPanel, ReactionBar } from "@/components/Chat";
 import { PlayingCard } from "@/components/PlayingCard";
-import { ThemeToggle } from "@/components/ThemeToggle";
 
 function useLastTrickFlash(st) {
   const [flash, setFlash] = useState(null);
@@ -37,10 +36,12 @@ function useLastTrickFlash(st) {
 
 export const CANCEL_MSG = "The match has ended because a player exited.";
 
-function PhaseLayer({ g, st, act, nameOf, dealing }) {
+function PhaseLayer({ g, st, act, nameOf, dealing, center }) {
   const my = st.my_seat;
   const myTeam = my % 2;
   if (dealing && st.phase === "trump_select") return null;
+  const inCenter = st.phase === "trump_select" || (st.phase === "koth_decision" && st.koth_decision !== myTeam) || (st.phase === "gs_decision" && st.gs_eligible !== myTeam);
+  if (!!center !== inCenter) return null;
   if (st.phase === "trump_select")
     return st.trump_selector === my ? <TrumpSelector onPick={(s) => act({ action: "select_trump", suit: s })} />
       : <Banner testId="waiting-trump-banner">{nameOf(st.trump_selector)} is choosing trump…</Banner>;
@@ -70,6 +71,7 @@ export default function GameTable() {
   const [exiting, setExiting] = useState(false);
   const st = g?.state;
   const flash = useLastTrickFlash(st);
+  const { resolvedTheme, setTheme } = useTheme();
   const fx = useTableEffects(g, (pl) => (pl.online ? toast.success(`${pl.username} reconnected`) : toast(`${pl.username} disconnected — waiting for them to return`)));
 
   useEffect(() => {
@@ -107,19 +109,25 @@ export default function GameTable() {
   const myTurn = st.phase === "playing" && st.turn === st.my_seat;
   const trickCards = st.trick.length ? st.trick : flash ? flash.cards : [];
   const winner = !st.trick.length && flash ? flash.winner : null;
+  const seatAt = (rel, horizontal) => {
+    const p = g.players.find((x) => (x.seat - st.my_seat + 4) % 4 === rel);
+    return <SeatPanel player={p} st={st} mySeat={st.my_seat} reaction={reactions[p.user_id]} pending={fx.pending[p.seat]}
+      dealing={fx.dealing} highlight={winner !== null && winner === p.seat} horizontal={horizontal} />;
+  };
 
   return (
     <MotionConfig reducedMotion="user">
-    <div className="fixed inset-0 felt grain overflow-hidden select-none" data-testid="game-table-container">
-      <div className="absolute top-0 inset-x-0 z-40 p-2 sm:p-4 flex items-start justify-between gap-2">
-        <div className="flex items-start gap-2">
+    <div className="fixed inset-0 felt grain overflow-hidden select-none flex flex-col" data-testid="game-table-container">
+      <Hud st={st} connected={connected}
+        left={
           <DropdownMenu onOpenChange={(o) => sound.play(o ? "menu_open" : "menu_close")}>
             <DropdownMenuTrigger asChild>
-              <button className="h-9 w-9 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-black/70" data-testid="game-menu-btn" data-sound="none" aria-label="Game menu"><Menu size={18} /></button>
+              <button className="shrink-0 h-9 w-9 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-black/70" data-testid="game-menu-btn" data-sound="none" aria-label="Game menu"><Menu size={18} /></button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-60" data-testid="game-menu">
               <DropdownMenuItem onSelect={() => navigate("/home")} data-testid="menu-back-home"><Home size={15} className="mr-2" /> Back to dashboard (keep seat)</DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setSoundOpen(true)} data-testid="menu-sound-settings"><Volume2 size={15} className="mr-2" /> Sound settings</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setTheme(resolvedTheme === "light" ? "dark" : "light")} data-testid="menu-theme-toggle"><SunMoon size={15} className="mr-2" /> Toggle light / dark</DropdownMenuItem>
               {st.phase !== "match_over" && (
                 <>
                   <DropdownMenuSeparator />
@@ -129,59 +137,57 @@ export default function GameTable() {
               )}
             </DropdownMenuContent>
           </DropdownMenu>
-          <Scoreboard st={st} mySeat={st.my_seat} />
-        </div>
-        <div className="flex flex-col items-end gap-2">
-          <TrumpBadge trump={st.trump} />
-          <div className="flex items-center gap-2">
-            <span data-testid="connection-status" className={`h-9 px-3 rounded-full bg-black/50 text-xs font-semibold flex items-center gap-1.5 ${connected ? "text-emerald-300" : "text-amber-300"}`}>
-              {connected ? <Wifi size={14} /> : <WifiOff size={14} className="animate-pulse" />}<span className="hidden sm:inline">{connected ? "Live" : "Reconnecting"}</span>
-            </span>
-            <ThemeToggle className="bg-black/50 text-white border-white/10" />
-            <button onClick={() => { setChatOpen(true); setUnread(0); sound.play("menu_open"); }} data-sound="none" data-testid="open-chat-btn" aria-label="Open chat"
-              className="relative h-9 w-9 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-black/70">
-              <MessageCircle size={18} />
-              {unread > 0 && <span className="absolute -top-1 -right-1 h-4 min-w-4 px-1 rounded-full bg-rose-500 text-[10px] font-bold" data-testid="chat-unread-badge">{unread}</span>}
-            </button>
+        }
+        right={
+          <button onClick={() => { setChatOpen(true); setUnread(0); sound.play("menu_open"); }} data-sound="none" data-testid="open-chat-btn" aria-label="Open chat"
+            className="relative shrink-0 h-9 w-9 rounded-full bg-black/50 text-white flex items-center justify-center hover:bg-black/70">
+            <MessageCircle size={18} />
+            {unread > 0 && <span className="absolute -top-1 -right-1 h-4 min-w-4 px-1 rounded-full bg-rose-500 text-[10px] font-bold" data-testid="chat-unread-badge">{unread}</span>}
+          </button>
+        } />
+
+      <div className="relative flex-1 min-h-0 px-1 sm:px-4 py-1 sm:py-2" data-testid="table-area">
+        <div className="h-full mx-auto max-w-5xl grid grid-cols-[auto_minmax(0,1fr)_auto] grid-rows-[auto_minmax(0,1fr)_auto] gap-1 sm:gap-3">
+          <div className="col-start-2 row-start-1 flex justify-center">{seatAt(2)}</div>
+          <div className="col-start-1 row-start-2 flex items-center">{seatAt(3)}</div>
+          <div className="col-start-3 row-start-2 flex items-center">{seatAt(1)}</div>
+          <div className="col-start-2 row-start-2 relative flex items-center justify-center min-h-0 min-w-0">
+            <div className="absolute inset-0 sm:inset-x-4 rounded-[36%] table-rail" />
+            <div className="relative z-10">
+              <TrickSlots cards={trickCards} mySeat={st.my_seat} winner={winner}>
+                <DealLayer flying={fx.flying} mySeat={st.my_seat} dealing={fx.dealing} />
+              </TrickSlots>
+            </div>
+            <PhaseLayer g={g} st={st} act={act} nameOf={nameOf} dealing={fx.dealing} center />
+            {fx.dealing && <div className="absolute bottom-[8%] inset-x-0 text-center z-20 text-[10px] sm:text-xs text-white/75 tracking-[0.3em] uppercase" data-testid="dealing-banner">Dealing…</div>}
           </div>
-          <div className="text-[11px] text-white/70 text-right font-mono whitespace-nowrap" data-testid="round-info">
-            Round {st.round_no} · Trick {Math.min(st.tricks_played + (st.trick.length ? 1 : 0), 13)}/13
-            {st.koth !== null && <div className="text-amber-300 font-sans font-bold" data-testid="koth-active-badge">KOTH · {TEAM_NAME[st.koth]}</div>}
-            {st.gs_declared !== null && <div className="text-rose-300 font-sans font-bold" data-testid="grand-slam-active-badge">GRAND SLAM · {TEAM_NAME[st.gs_declared]}</div>}
+          <div className="col-start-1 col-span-3 row-start-3 flex items-center justify-center gap-2 sm:gap-4 min-w-0">
+            {st.last_trick ? (
+              <button onClick={() => setShowLast((v) => !v)} className="shrink-0 h-8 px-2.5 rounded-full bg-black/40 text-[11px] text-white/75 hover:text-white inline-flex items-center gap-1" data-testid="last-trick-btn">
+                <HistoryIcon size={13} /><span className="hidden sm:inline">Last trick</span>
+              </button>
+            ) : <span className="w-8 shrink-0" />}
+            {seatAt(0, true)}
+            <div className="shrink-0 text-[11px] sm:text-xs font-semibold min-w-[72px] text-center" data-testid="turn-indicator">
+              {st.phase === "playing" && (myTurn
+                ? <span className="inline-block px-3 py-1 rounded-full bg-amber-400 text-slate-950 shadow-[0_0_18px_rgba(251,191,36,.55)]">Your turn</span>
+                : <span className="inline-block px-3 py-1 rounded-full bg-black/45 text-white/85 max-w-[120px] truncate align-middle">{nameOf(st.turn)}</span>)}
+            </div>
           </div>
         </div>
+        {showLast && st.last_trick && (
+          <div className="absolute left-2 sm:left-4 bottom-12 z-40 rounded-xl bg-black/75 backdrop-blur p-2 flex gap-1" data-testid="last-trick-panel">
+            {st.last_trick.cards.map(([s, c]) => (
+              <div key={c} className="text-center"><PlayingCard card={c} size="sm" testId={`last-trick-card-${c}`} className={s === st.last_trick.winner ? "ring-2 ring-amber-400" : ""} /><div className="text-[9px] text-white/70 mt-0.5 max-w-[44px] truncate">{nameOf(s)}</div></div>
+            ))}
+          </div>
+        )}
       </div>
 
-      <div className="absolute inset-x-[6%] top-[16%] bottom-[26%] rounded-[50%] table-rail" />
-      {g.players.map((p) => <Seat key={p.seat} player={p} st={st} mySeat={st.my_seat} reaction={reactions[p.user_id]}
-        pending={fx.pending[p.seat]} dealing={fx.dealing} highlight={winner !== null && winner === p.seat} />)}
-      <TrickArea cards={trickCards} mySeat={st.my_seat} winner={winner} />
-      <DealLayer flying={fx.flying} mySeat={st.my_seat} dealing={fx.dealing} />
+      <FanHand cards={st.hand.filter((c) => !fx.hidden.has(c))} legal={st.legal} myTurn={myTurn && !fx.dealing} pending={pending}
+        onPlay={(c) => act({ action: "play", card: c })} onInvalid={() => toast.error("You must follow the leading suit")} />
       <TenFlights flights={fx.tenFlights} />
       <Announcement a={fx.announce} />
-      {fx.dealing && <div className="absolute left-1/2 -translate-x-1/2 top-[56%] z-30 text-xs text-white/70 tracking-widest uppercase" data-testid="dealing-banner">Dealing…</div>}
-
-      {st.phase === "playing" && (
-        <div className="absolute left-1/2 -translate-x-1/2 bottom-[96px] sm:bottom-[166px] z-30 text-xs font-semibold" data-testid="turn-indicator">
-          {myTurn ? <span className="px-3 py-1 rounded-full bg-amber-400 text-slate-950">Your turn{st.trick.length ? "" : " — lead any card"}</span>
-            : <span className="px-3 py-1 rounded-full bg-black/55 text-white/85">{nameOf(st.turn)}'s turn</span>}
-        </div>
-      )}
-      {st.last_trick && (
-        <button onClick={() => setShowLast((v) => !v)} className="absolute left-2 sm:left-4 bottom-[100px] sm:bottom-[170px] z-30 text-[11px] text-white/70 hover:text-white inline-flex items-center gap-1" data-testid="last-trick-btn">
-          <HistoryIcon size={13} /> Last trick
-        </button>
-      )}
-      {showLast && st.last_trick && (
-        <div className="absolute left-2 sm:left-4 bottom-[124px] sm:bottom-[194px] z-40 rounded-xl bg-black/70 p-2 flex gap-1" data-testid="last-trick-panel">
-          {st.last_trick.cards.map(([s, c]) => (
-            <div key={c} className="text-center"><PlayingCard card={c} size="sm" testId={`last-trick-card-${c}`} className={s === st.last_trick.winner ? "ring-2 ring-amber-400" : ""} /><div className="text-[9px] text-white/70 mt-0.5 max-w-[44px] truncate">{nameOf(s)}</div></div>
-          ))}
-        </div>
-      )}
-
-      <Hand cards={st.hand.filter((c) => !fx.hidden.has(c))} legal={st.legal} myTurn={myTurn && !fx.dealing} pending={pending}
-        onPlay={(c) => act({ action: "play", card: c })} onInvalid={() => toast.error("You must follow the leading suit")} />
       <PhaseLayer g={g} st={st} act={act} nameOf={nameOf} dealing={fx.dealing} />
 
       <Sheet open={soundOpen} onOpenChange={(o) => { setSoundOpen(o); sound.play(o ? "menu_open" : "menu_close"); }}>

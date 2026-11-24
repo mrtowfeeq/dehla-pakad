@@ -4,6 +4,8 @@ const SIZES = {
   xs: "w-8 h-11 text-[10px] rounded-md p-0.5",
   sm: "w-11 h-16 text-xs rounded-md p-1",
   md: "w-14 h-20 sm:w-16 sm:h-[90px] text-sm sm:text-base rounded-lg p-1.5",
+  trick: "w-[54px] h-[76px] text-xs rounded-md p-1 sm:w-16 sm:h-[90px] sm:text-sm sm:p-1.5 lg:w-[78px] lg:h-[110px] lg:text-base",
+  fluid: "w-full h-full rounded-[0.6em] p-[0.3em]",
   hand: "w-12 h-[68px] text-xs rounded-lg p-1 sm:w-20 sm:h-28 sm:text-lg sm:p-2 md:w-[88px] md:h-[124px]",
   lg: "w-16 h-24 sm:w-20 sm:h-28 md:w-[88px] md:h-[124px] text-base sm:text-lg rounded-xl p-1.5 sm:p-2",
 };
@@ -22,7 +24,7 @@ export function PlayingCard({ card, size = "md", className = "", testId, ...rest
         <div className="-mt-0.5">{SUIT_SYMBOL[s]}</div>
       </div>
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-        <span className={size === "xs" ? "text-base" : size === "sm" ? "text-xl" : size === "hand" ? "text-2xl sm:text-4xl" : "text-3xl sm:text-4xl"}>{SUIT_SYMBOL[s]}</span>
+        <span className={size === "xs" ? "text-base" : size === "sm" ? "text-xl" : size === "hand" ? "text-2xl sm:text-4xl" : size === "fluid" ? "text-[1.9em]" : size === "trick" ? "text-2xl sm:text-3xl lg:text-4xl" : "text-3xl sm:text-4xl"}>{SUIT_SYMBOL[s]}</span>
       </div>
       <div className="leading-none font-bold self-end rotate-180">
         <div>{r}</div>

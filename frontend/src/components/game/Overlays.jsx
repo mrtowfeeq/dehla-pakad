@@ -24,7 +24,7 @@ function Modal({ children, testId, delay = 0, tone }) {
 
 export function Banner({ children, testId }) {
   return (
-    <div className="absolute left-1/2 top-[42%] -translate-x-1/2 -translate-y-1/2 z-40 rounded-xl bg-black/65 backdrop-blur px-5 py-3 text-sm text-white text-center max-w-[80%]" data-testid={testId}>
+    <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-40 rounded-xl bg-black/70 backdrop-blur px-5 py-3 text-sm text-white text-center max-w-[80%]" data-testid={testId}>
       {children}
     </div>
   );
@@ -32,13 +32,13 @@ export function Banner({ children, testId }) {
 
 export function TrumpSelector({ onPick }) {
   return (
-    <div className="absolute left-1/2 top-[42%] -translate-x-1/2 -translate-y-1/2 z-50 rounded-2xl border border-amber-400/40 bg-[#0d1626]/95 p-5 text-white text-center shadow-2xl" data-testid="trump-suit-selector">
+    <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-[min(100%,300px)] rounded-2xl border border-amber-400/40 bg-[#0b1a17]/95 p-3 sm:p-5 text-white text-center shadow-2xl" data-testid="trump-suit-selector">
       <p className="eyebrow !text-amber-200/80">You choose trump</p>
       <p className="text-xs text-white/60 mt-1">Based on your first five cards — any suit is allowed.</p>
       <div className="grid grid-cols-4 gap-2 mt-4">
         {["S", "H", "D", "C"].map((s) => (
           <button key={s} onClick={() => onPick(s)} data-testid={`trump-option-${s}`}
-            className="h-16 w-16 rounded-xl bg-white hover:-translate-y-1 hover:shadow-amber-400/40 hover:shadow-lg transition-transform flex flex-col items-center justify-center">
+            className="h-14 w-full sm:h-16 sm:w-16 rounded-xl bg-white hover:-translate-y-1 hover:shadow-amber-400/40 hover:shadow-lg transition-transform flex flex-col items-center justify-center">
             <span className={`text-3xl leading-none ${isRed(s) ? "text-rose-600" : "text-slate-900"}`}>{SUIT_SYMBOL[s]}</span>
             <span className="text-[9px] text-slate-600 font-bold uppercase mt-0.5">{SUIT_NAME[s]}</span>
           </button>
