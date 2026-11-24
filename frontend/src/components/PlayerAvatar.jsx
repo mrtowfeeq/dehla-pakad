@@ -1,7 +1,7 @@
-import { Crown, Star, Flame, Gem } from "lucide-react";
+import { Crown, Star, Flame, Gem, Bot } from "lucide-react";
 
 const GLYPH = { spade: "♠", heart: "♥", diamond: "♦", club: "♣" };
-const ICON = { crown: Crown, star: Star, flame: Flame, gem: Gem };
+const ICON = { crown: Crown, star: Star, flame: Flame, gem: Gem, bot: Bot };
 
 export function PlayerAvatar({ user, size = 40, online, ring = "", className = "" }) {
   const color = user?.avatar_color || "#64748b";

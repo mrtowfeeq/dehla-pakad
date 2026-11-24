@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
-import { Copy, Crown, Check, LogOut, UserPlus, Shuffle } from "lucide-react";
+import { Copy, Crown, Check, LogOut, UserPlus, Shuffle, Bot, X } from "lucide-react";
 import { useApp, useSocketEvent } from "@/context/AppContext";
 import { errMsg, TEAM_NAME } from "@/lib/api";
 import { PlayerAvatar } from "@/components/PlayerAvatar";
@@ -10,7 +10,7 @@ import { ChatPanel } from "@/components/Chat";
 
 const POS = ["bottom-0 left-1/2 -translate-x-1/2", "right-0 top-1/2 -translate-y-1/2", "top-0 left-1/2 -translate-x-1/2", "left-0 top-1/2 -translate-y-1/2"];
 
-function SeatSlot({ room, seat, selected, onClick, canEdit }) {
+function SeatSlot({ room, seat, selected, onClick, canEdit, onRemoveBot }) {
   const p = room.seats[seat];
   const team = seat % 2;
   const ready = p && room.ready[p.user_id];
@@ -24,6 +24,16 @@ function SeatSlot({ room, seat, selected, onClick, canEdit }) {
           <div className="text-sm font-semibold truncate max-w-full flex items-center gap-1">
             {room.host_id === p.user_id && <Crown size={12} className="text-primary" />}{p.username}
           </div>
+          {p.is_bot && (
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-muted-foreground">
+              <Bot size={11} /> BOT
+              {canEdit && (
+                <span role="button" tabIndex={0} aria-label="Remove bot" data-testid={`remove-bot-${seat}`}
+                  onClick={(e) => { e.stopPropagation(); onRemoveBot(p.user_id); }}
+                  className="ml-1 h-4 w-4 rounded-full bg-destructive/80 text-white inline-flex items-center justify-center hover:bg-destructive"><X size={10} /></span>
+              )}
+            </span>
+          )}
           <div className={`text-[11px] font-bold ${ready ? "text-emerald-400" : "text-muted-foreground"}`} data-testid={`lobby-seat-${seat}-ready`}>{ready ? "READY" : "Not ready"}</div>
         </div>
       ) : (
@@ -119,7 +129,8 @@ export default function Lobby() {
               <div className="text-[10px] uppercase tracking-widest text-amber-100/70">points to win</div>
             </div>
           </div>
-          {[0, 1, 2, 3].map((s) => <SeatSlot key={s} room={room} seat={s} selected={sel === s} canEdit={isHost} onClick={() => clickSeat(s)} />)}
+          {[0, 1, 2, 3].map((s) => <SeatSlot key={s} room={room} seat={s} selected={sel === s} canEdit={isHost} onClick={() => clickSeat(s)}
+            onRemoveBot={(id) => call(() => api.delete(`/rooms/${code}/bots/${id}`))} />)}
         </div>
       </div>
 
@@ -143,6 +154,16 @@ export default function Lobby() {
                 </div>
               </div>
               <button className="btn-ghost w-full" onClick={shuffleTeams} data-testid="shuffle-teams-btn"><Shuffle size={16} /> Random teams</button>
+              {!full && (
+                <div className="grid grid-cols-2 gap-2">
+                  <button className="btn-ghost" onClick={() => call(() => api.post(`/rooms/${code}/bots`))} data-testid="add-bot-btn"><Bot size={16} /> Add bot</button>
+                  <button className="btn-ghost" data-testid="fill-bots-btn"
+                    onClick={async () => { for (let i = 0; i < room.seats.filter((x) => !x).length; i++) await call(() => api.post(`/rooms/${code}/bots`)); }}>
+                    Fill with bots
+                  </button>
+                </div>
+              )}
+              {room.seats.some((p) => p?.is_bot) && <p className="text-xs text-muted-foreground" data-testid="bots-practice-note">Games with bots are practice — they don't count toward stats or the leaderboard.</p>}
             </>
           ) : (
             <div className="text-sm text-muted-foreground">

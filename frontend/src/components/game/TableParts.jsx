@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { WifiOff } from "lucide-react";
+import { WifiOff, Bot } from "lucide-react";
 import { PlayerAvatar } from "@/components/PlayerAvatar";
 import { CardBack, PlayingCard } from "@/components/PlayingCard";
 import { TEAM_NAME } from "@/lib/api";
@@ -43,6 +43,7 @@ export function Seat({ player, st, mySeat, reaction }) {
         <div className={`text-[10px] font-bold uppercase tracking-wider ${team === 0 ? "text-team-a" : "text-team-b"}`}>
           {TEAM_NAME[team]}{rel === 2 ? " · Partner" : ""}
         </div>
+        {player.is_bot && <div className="text-[10px] text-white/60 inline-flex items-center gap-1" data-testid={`bot-badge-${player.seat}`}><Bot size={10} /> Bot</div>}
         {!player.online && <div className="text-[10px] text-rose-300">Reconnecting…</div>}
       </div>
       {rel !== 0 && (

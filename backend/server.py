@@ -28,7 +28,9 @@ load_dotenv(ROOT_DIR / '.env')
 try:
     from backend.clerk_auth import clerk_router, require_user, verify_session_token
     from backend.game_service import Hub, GameService, EMOJIS, now_iso
+    from backend.bots import BOT_NAMES
 except ModuleNotFoundError:
+    from bots import BOT_NAMES
     from clerk_auth import clerk_router, require_user, verify_session_token
     from game_service import Hub, GameService, EMOJIS, now_iso
 
@@ -319,12 +321,18 @@ async def new_code():
             return code
 
 
+def bot_user(bid, b):
+    return {"user_id": bid, "username": b["username"], "avatar_color": b["avatar_color"], "avatar_icon": b["avatar_icon"],
+            "online": True, "is_bot": True, "last_seen": None, "stats": dict(EMPTY_STATS), "created_at": None}
+
+
 async def room_view(room):
     users = await users_by_ids(room["seats"])
+    bots = room.get("bots") or {}
     return {"code": room["code"], "host_id": room.get("host_id"), "is_public": room.get("is_public", False),
             "status": room["status"], "target": room["target"], "dealer_seat": room["dealer_seat"],
-            "game_id": room.get("game_id"), "ready": room.get("ready", {}),
-            "seats": [public_user(users[u]) if u in users else None for u in room["seats"]]}
+            "game_id": room.get("game_id"), "ready": {**room.get("ready", {}), **{b: True for b in bots}},
+            "seats": [bot_user(u, bots[u]) if u in bots else public_user(users[u]) if u in users else None for u in room["seats"]]}
 
 
 async def broadcast_room(room):
@@ -408,12 +416,14 @@ async def _leave(room, uid):
         return await _dissolve_public(room, {uid})
     seats = [None if s == uid else s for s in room["seats"]]
     ready = {k: v for k, v in room.get("ready", {}).items() if k != uid}
-    if not any(seats):
+    humans = [s for s in seats if s and s not in (room.get("bots") or {})]
+    if not humans:
         await db.rooms.delete_one({"code": room["code"]})
+        await hub.send(uid, {"type": "room_left", "code": room["code"]})
         return
     host = room.get("host_id")
     if host == uid and not room.get("is_public"):
-        host = next(s for s in seats if s)
+        host = humans[0]
     await db.rooms.update_one({"code": room["code"]}, {"$set": {"seats": seats, "ready": ready, "host_id": host}})
     room.update(seats=seats, ready=ready, host_id=host)
     await broadcast_room(room)
@@ -471,7 +481,8 @@ async def set_ready(code: str, body: ReadyIn, member: dict = Depends(player)):
 
 
 def _all_ready(room):
-    return all(room["seats"]) and all(room.get("ready", {}).get(u) for u in room["seats"])
+    bots = room.get("bots") or {}
+    return all(room["seats"]) and all(u in bots or room.get("ready", {}).get(u) for u in room["seats"])
 
 
 async def _start(room):
@@ -484,6 +495,7 @@ async def _start(room):
     view = await broadcast_room(room)
     await hub.send_many(room["seats"], {"type": "game_started", "game_id": game["id"], "room_code": room["code"]})
     await games.broadcast(game)
+    games.kick_bots(game["id"])
     return view
 
 
@@ -494,6 +506,38 @@ async def start_game(code: str, member: dict = Depends(player)):
     if not _all_ready(room):
         raise HTTPException(400, "All four seats must be filled and every player ready")
     return await _start(room)
+
+
+@api_router.post("/rooms/{code}/bots")
+async def add_bot(code: str, member: dict = Depends(player)):
+    room = await get_member_room(code, member["user_id"])
+    _host_only(room, member["user_id"])
+    if None not in room["seats"]:
+        raise HTTPException(409, "Room is full")
+    bots = room.get("bots") or {}
+    taken = {b["username"] for b in bots.values()}
+    name = next(f"Bot {n}" for n in BOT_NAMES if f"Bot {n}" not in taken)
+    bid = f"bot_{uuid.uuid4().hex[:12]}"
+    seats = list(room["seats"])
+    seats[seats.index(None)] = bid
+    bots[bid] = {"username": name, "avatar_color": random.choice(AVATAR_COLORS), "avatar_icon": "bot"}
+    await db.rooms.update_one({"code": room["code"], "status": "lobby"}, {"$set": {"seats": seats, "bots": bots}})
+    room.update(seats=seats, bots=bots)
+    return await broadcast_room(room)
+
+
+@api_router.delete("/rooms/{code}/bots/{bot_id}")
+async def remove_bot(code: str, bot_id: str, member: dict = Depends(player)):
+    room = await get_member_room(code, member["user_id"])
+    _host_only(room, member["user_id"])
+    bots = room.get("bots") or {}
+    if bot_id not in bots:
+        raise HTTPException(404, "Bot not found")
+    bots.pop(bot_id)
+    seats = [None if s == bot_id else s for s in room["seats"]]
+    await db.rooms.update_one({"code": room["code"]}, {"$set": {"seats": seats, "bots": bots}})
+    room.update(seats=seats, bots=bots)
+    return await broadcast_room(room)
 
 
 @api_router.post("/rooms/{code}/invite")

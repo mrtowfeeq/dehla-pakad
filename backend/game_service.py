@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from fastapi import WebSocket
 
 from engine import Match, GameError, team_of
+import bots
 
 log = logging.getLogger("dehla")
 NEXT_ROUND_DELAY = 7
@@ -66,23 +67,26 @@ class GameService:
         self.games: dict[str, dict] = {}
         self.locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.timers: dict[str, asyncio.Task] = {}
+        self.bot_tasks: dict[str, asyncio.Task] = {}
 
     async def load_active(self):
         async for doc in self.db.games.find({"status": "active"}, {"_id": 0}):
             self.games[doc["id"]] = doc
             if doc["state"]["phase"] == "round_over":
                 self._schedule_next(doc["id"])
+            self.kick_bots(doc["id"])
         log.info("restored %d active games", len(self.games))
 
     async def create(self, room):
         players = []
+        room_bots = room.get("bots") or {}
         for seat, uid in enumerate(room["seats"]):
-            u = await self.db.users.find_one({"user_id": uid}, {"_id": 0, "username": 1, "avatar_color": 1, "avatar_icon": 1})
+            u = room_bots.get(uid) or await self.db.users.find_one({"user_id": uid}, {"_id": 0, "username": 1, "avatar_color": 1, "avatar_icon": 1})
             players.append({"user_id": uid, "seat": seat, "team": team_of(seat), "username": u["username"],
-                            "avatar_color": u.get("avatar_color"), "avatar_icon": u.get("avatar_icon")})
+                            "avatar_color": u.get("avatar_color"), "avatar_icon": u.get("avatar_icon"), "is_bot": uid in room_bots})
         match = Match.new(dealer=room["dealer_seat"], target=room["target"])
         game = {"id": str(uuid.uuid4()), "room_code": room["code"], "is_public": room.get("is_public", False),
-                "players": players, "state": match.s, "status": "active", "created_at": now_iso(), "updated_at": now_iso()}
+                "players": players, "has_bots": bool(room_bots), "state": match.s, "status": "active", "created_at": now_iso(), "updated_at": now_iso()}
         await self.db.games.insert_one(dict(game))
         game.pop("_id", None)
         self.games[game["id"]] = game
@@ -103,7 +107,7 @@ class GameService:
 
     def view_for(self, game, uid):
         seat = self.seat_of(game, uid)
-        players = [{**p, "online": self.hub.online(p["user_id"])} for p in game["players"]]
+        players = [{**p, "online": p.get("is_bot") or self.hub.online(p["user_id"])} for p in game["players"]]
         return {"type": "game_state", "game_id": game["id"], "room_code": game["room_code"], "status": game["status"],
                 "players": players, "state": Match(game["state"]).view(seat)}
 
@@ -139,11 +143,71 @@ class GameService:
             await self._log(gid, action, seat, public)
             await self._after_change(game, rounds_before)
         await self.broadcast(game)
+        self.kick_bots(gid)
         return None
+
+    # ---------- bots ----------
+    def _bot_turn(self, game):
+        s = game["state"]
+        bot_seats = {p["seat"] for p in game["players"] if p.get("is_bot")}
+        if not bot_seats:
+            return None
+        team_is_bots = lambda t: {t, t + 2} <= bot_seats
+        if s["phase"] == "trump_select" and s["trump_selector"] in bot_seats:
+            return "select_trump", s["trump_selector"]
+        if s["phase"] == "playing" and s["turn"] in bot_seats:
+            return "play", s["turn"]
+        if s["phase"] == "koth_decision" and team_is_bots(s["koth_decision"]):
+            return "koth", s["koth_decision"]
+        if s["phase"] == "gs_decision" and team_is_bots(s["gs_eligible"]):
+            return "grand_slam", s["gs_eligible"]
+        return None
+
+    def kick_bots(self, gid):
+        t = self.bot_tasks.get(gid)
+        if t and not t.done():
+            return
+        self.bot_tasks[gid] = asyncio.create_task(self._run_bots(gid))
+
+    async def _run_bots(self, gid):
+        while True:
+            game = self.games.get(gid)
+            if not game or not self._bot_turn(game):
+                return
+            s = game["state"]
+            await asyncio.sleep(1.7 if not s["trick"] and s["tricks"] and s["phase"] == "playing" else 0.9)
+            async with self.locks[gid]:
+                game = self.games.get(gid)
+                turn = game and self._bot_turn(game)
+                if not turn:
+                    return
+                action, seat = turn
+                m = Match(game["state"])
+                rounds_before = len(m.s["rounds"])
+                data = {}
+                try:
+                    if action == "select_trump":
+                        data["suit"] = bots.choose_trump(m.s["hands"][seat])
+                        m.select_trump(seat, data["suit"])
+                    elif action == "play":
+                        data["card"] = bots.choose_card(m.s, seat)
+                        m.play(seat, data["card"])
+                    elif action == "koth":
+                        data["declare"] = bots.decide_koth(m.s, seat)
+                        m.koth_decide(seat, data["declare"])
+                    else:
+                        data["declare"] = bots.decide_grand_slam(m.s, seat)
+                        m.grand_slam_decide(seat, data["declare"])
+                except GameError as e:
+                    log.error("bot action failed in %s: %s", gid, e)
+                    return
+                await self._log(gid, action, seat, {**data, "bot": True})
+                await self._after_change(game, rounds_before)
+            await self.broadcast(game)
 
     async def _after_change(self, game, rounds_before):
         s = game["state"]
-        for r in s["rounds"][rounds_before:]:
+        for r in ([] if game.get("has_bots") else s["rounds"][rounds_before:]):
             winners = [p["user_id"] for p in game["players"] if p["team"] == r["winner_team"]]
             await self.db.users.update_many({"user_id": {"$in": winners}},
                                             {"$inc": {f"stats.{r['type']}_wins": 1, "stats.rounds_won": 1}})
@@ -158,12 +222,12 @@ class GameService:
         s = game["state"]
         game["status"] = "finished"
         wt = s["winner_team"]
-        for p in game["players"]:
+        for p in ([] if game.get("has_bots") else game["players"]):
             won = p["team"] == wt
             await self.db.users.update_one({"user_id": p["user_id"]},
                                            {"$inc": {"stats.games_played": 1, "stats.wins" if won else "stats.losses": 1}})
         await self.db.matches.insert_one({
-            "id": str(uuid.uuid4()), "game_id": game["id"], "room_code": game["room_code"], "is_public": game["is_public"],
+            "id": str(uuid.uuid4()), "game_id": game["id"], "room_code": game["room_code"], "is_public": game["is_public"], "has_bots": game.get("has_bots", False),
             "players": game["players"], "player_ids": [p["user_id"] for p in game["players"]],
             "scores": s["scores"], "target": s["target"], "winner_team": wt, "rounds": s["rounds"], "forfeited_by": s.get("forfeited_by"),
             "started_at": game["created_at"], "finished_at": now_iso()})
@@ -191,6 +255,7 @@ class GameService:
             m.next_round()
             await self._after_change(game, len(m.s["rounds"]))
         await self.broadcast(game)
+        self.kick_bots(gid)
 
     async def _log(self, gid, kind, seat, data):
         await self.db.game_events.insert_one({"game_id": gid, "type": kind, "seat": seat, "data": data, "ts": now_iso()})
