@@ -6,7 +6,7 @@ import { sound } from "@/lib/sound";
 
 export function useSoundPrefs() {
   const [p, setP] = useState(sound.prefs);
-  useEffect(() => sound.subscribe(setP), []);
+  useEffect(() => { setP(sound.prefs); return sound.subscribe(setP); }, []);
   return p;
 }
 
