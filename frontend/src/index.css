@@ -4,112 +4,96 @@
 
 body {
     margin: 0;
-    font-family:
-        -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
-        "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
-        sans-serif;
+    font-family: "Plus Jakarta Sans", sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
 }
 
-code {
-    font-family:
-        source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
-}
-
 @layer base {
     :root {
-        --background: 0 0% 100%;
-        --foreground: 0 0% 3.9%;
+        --background: 210 20% 97%;
+        --foreground: 222 47% 11%;
         --card: 0 0% 100%;
-        --card-foreground: 0 0% 3.9%;
+        --card-foreground: 222 47% 11%;
         --popover: 0 0% 100%;
-        --popover-foreground: 0 0% 3.9%;
-        --primary: 0 0% 9%;
-        --primary-foreground: 0 0% 98%;
-        --secondary: 0 0% 96.1%;
-        --secondary-foreground: 0 0% 9%;
-        --muted: 0 0% 96.1%;
-        --muted-foreground: 0 0% 45.1%;
-        --accent: 0 0% 96.1%;
-        --accent-foreground: 0 0% 9%;
-        --destructive: 0 84.2% 60.2%;
-        --destructive-foreground: 0 0% 98%;
-        --border: 0 0% 89.8%;
-        --input: 0 0% 89.8%;
-        --ring: 0 0% 3.9%;
-        --chart-1: 12 76% 61%;
-        --chart-2: 173 58% 39%;
-        --chart-3: 197 37% 24%;
-        --chart-4: 43 74% 66%;
-        --chart-5: 27 87% 67%;
-        --radius: 0.5rem;
+        --popover-foreground: 222 47% 11%;
+        --primary: 38 92% 50%;
+        --primary-foreground: 222 47% 11%;
+        --secondary: 210 20% 92%;
+        --secondary-foreground: 222 47% 11%;
+        --muted: 210 20% 94%;
+        --muted-foreground: 215 16% 42%;
+        --accent: 160 84% 34%;
+        --accent-foreground: 0 0% 100%;
+        --destructive: 0 84% 60%;
+        --destructive-foreground: 0 0% 100%;
+        --border: 214 20% 86%;
+        --input: 214 20% 86%;
+        --ring: 38 92% 50%;
+        --radius: 0.75rem;
+        --felt: #123a35;
+        --felt-inner: #1a4a43;
+        --felt-edge: #0b2622;
+        --team-a: #0284c7;
+        --team-b: #d97706;
     }
     .dark {
-        --background: 0 0% 3.9%;
-        --foreground: 0 0% 98%;
-        --card: 0 0% 3.9%;
-        --card-foreground: 0 0% 98%;
-        --popover: 0 0% 3.9%;
-        --popover-foreground: 0 0% 98%;
-        --primary: 0 0% 98%;
-        --primary-foreground: 0 0% 9%;
-        --secondary: 0 0% 14.9%;
-        --secondary-foreground: 0 0% 98%;
-        --muted: 0 0% 14.9%;
-        --muted-foreground: 0 0% 63.9%;
-        --accent: 0 0% 14.9%;
-        --accent-foreground: 0 0% 98%;
-        --destructive: 0 62.8% 30.6%;
-        --destructive-foreground: 0 0% 98%;
-        --border: 0 0% 14.9%;
-        --input: 0 0% 14.9%;
-        --ring: 0 0% 83.1%;
-        --chart-1: 220 70% 50%;
-        --chart-2: 160 60% 45%;
-        --chart-3: 30 80% 55%;
-        --chart-4: 280 65% 60%;
-        --chart-5: 340 75% 55%;
+        --background: 222 47% 7%;
+        --foreground: 210 40% 98%;
+        --card: 222 44% 10%;
+        --card-foreground: 210 40% 98%;
+        --popover: 222 44% 10%;
+        --popover-foreground: 210 40% 98%;
+        --primary: 43 89% 56%;
+        --primary-foreground: 222 47% 8%;
+        --secondary: 220 30% 16%;
+        --secondary-foreground: 210 40% 98%;
+        --muted: 220 28% 14%;
+        --muted-foreground: 215 20% 65%;
+        --accent: 160 84% 39%;
+        --accent-foreground: 210 40% 98%;
+        --destructive: 0 72% 51%;
+        --destructive-foreground: 210 40% 98%;
+        --border: 220 28% 18%;
+        --input: 220 28% 18%;
+        --ring: 43 89% 56%;
+        --felt: #0f233a;
+        --felt-inner: #14304f;
+        --felt-edge: #070e18;
+        --team-a: #38bdf8;
+        --team-b: #f59e0b;
     }
 }
 
 @layer base {
-    * {
-        @apply border-border;
-    }
-    body {
-        @apply bg-background text-foreground;
-    }
+    * { @apply border-border; }
+    body { @apply bg-background text-foreground; }
+    ::selection { background: hsl(var(--primary) / 0.35); }
 }
 
-@layer base {
-    [data-debug-wrapper="true"] {
-        display: contents !important;
+@layer components {
+    .font-display { font-family: "Cinzel", serif; letter-spacing: 0.04em; }
+    .font-mono { font-family: "JetBrains Mono", monospace; }
+    .eyebrow { @apply text-[11px] uppercase tracking-[0.22em] font-semibold text-muted-foreground; }
+    .panel { @apply rounded-2xl border border-border bg-card/80 backdrop-blur-md; }
+    .btn-gold { @apply inline-flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 font-bold text-slate-950 bg-gradient-to-r from-amber-400 to-amber-500 shadow-lg shadow-amber-500/20 hover:from-amber-300 hover:to-amber-400 active:scale-95 disabled:opacity-50 disabled:pointer-events-none transition-[transform,background-color,opacity] duration-150; }
+    .btn-ghost { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 font-semibold border border-border bg-secondary/60 hover:bg-secondary active:scale-95 disabled:opacity-50 disabled:pointer-events-none transition-[transform,background-color] duration-150; }
+    .felt {
+        background: radial-gradient(ellipse at center, var(--felt-inner) 0%, var(--felt) 55%, var(--felt-edge) 100%);
     }
-
-    [data-debug-wrapper="true"] > * {
-        margin-left: inherit;
-        margin-right: inherit;
-        margin-top: inherit;
-        margin-bottom: inherit;
-        padding-left: inherit;
-        padding-right: inherit;
-        padding-top: inherit;
-        padding-bottom: inherit;
-        column-gap: inherit;
-        row-gap: inherit;
-        gap: inherit;
-        border-left-width: inherit;
-        border-right-width: inherit;
-        border-top-width: inherit;
-        border-bottom-width: inherit;
-        border-left-style: inherit;
-        border-right-style: inherit;
-        border-top-style: inherit;
-        border-bottom-style: inherit;
-        border-left-color: inherit;
-        border-right-color: inherit;
-        border-top-color: inherit;
-        border-bottom-color: inherit;
+    .grain::after {
+        content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0.07; mix-blend-mode: overlay;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
     }
+    .text-team-a { color: var(--team-a); }
+    .text-team-b { color: var(--team-b); }
+    .bg-team-a { background-color: var(--team-a); }
+    .bg-team-b { background-color: var(--team-b); }
+    .ring-team-a { --tw-ring-color: var(--team-a); }
+    .ring-team-b { --tw-ring-color: var(--team-b); }
 }
+
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise 0.6s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes pulse-ring { 0% { box-shadow: 0 0 0 0 hsl(var(--primary) / .55); } 100% { box-shadow: 0 0 0 14px hsl(var(--primary) / 0); } }
+.turn-pulse { animation: pulse-ring 1.4s ease-out infinite; }

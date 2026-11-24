@@ -1,0 +1,143 @@
+{
+  "theme": {
+    "philosophy": "Premium minimalist Indian card room. Dark charcoal/navy felt depth with tactile royal gold and emerald touches. Clean crisp card faces with authentic suits. The table is hero.",
+    "fonts": {
+      "display": "Cinzel, serif",
+      "heading": "Plus Jakarta Sans, sans-serif",
+      "body": "Plus Jakarta Sans, sans-serif",
+      "mono": "JetBrains Mono, monospace",
+      "google_fonts_url": "https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800;900&family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    },
+    "css_variables": {
+      "dark": {
+        "--background": "222 47% 7%",
+        "--foreground": "210 40% 98%",
+        "--card": "222 44% 10%",
+        "--card-foreground": "210 40% 98%",
+        "--popover": "222 44% 10%",
+        "--popover-foreground": "210 40% 98%",
+        "--primary": "43 89% 56%",
+        "--primary-foreground": "222 47% 8%",
+        "--secondary": "220 30% 16%",
+        "--secondary-foreground": "210 40% 98%",
+        "--muted": "220 28% 14%",
+        "--muted-foreground": "215 20% 65%",
+        "--accent": "160 84% 39%",
+        "--accent-foreground": "210 40% 98%",
+        "--destructive": "0 84% 60%",
+        "--destructive-foreground": "210 40% 98%",
+        "--border": "220 28% 18%",
+        "--input": "220 28% 18%",
+        "--ring": "43 89% 56%",
+        "--table-felt": "#0b1726",
+        "--table-felt-inner": "#0f233a",
+        "--team-a": "#38bdf8",
+        "--team-b": "#f59e0b"
+      },
+      "light": {
+        "--background": "210 20% 98%",
+        "--foreground": "222 47% 11%",
+        "--card": "0 0% 100%",
+        "--card-foreground": "222 47% 11%",
+        "--popover": "0 0% 100%",
+        "--popover-foreground": "222 47% 11%",
+        "--primary": "38 92% 50%",
+        "--primary-foreground": "222 47% 11%",
+        "--secondary": "210 20% 92%",
+        "--secondary-foreground": "222 47% 11%",
+        "--muted": "210 20% 94%",
+        "--muted-foreground": "215 16% 47%",
+        "--accent": "160 84% 34%",
+        "--accent-foreground": "0 0% 100%",
+        "--destructive": "0 84% 60%",
+        "--destructive-foreground": "0 0% 100%",
+        "--border": "214 20% 88%",
+        "--input": "214 20% 88%",
+        "--ring": "38 92% 50%",
+        "--table-felt": "#122a27",
+        "--table-felt-inner": "#183e39",
+        "--team-a": "#0284c7",
+        "--team-b": "#d97706"
+      }
+    }
+  },
+  "layout_specs": {
+    "game_table": {
+      "aspect_ratio": "rounded-3xl border-2 border-amber-500/30 shadow-2xl relative overflow-hidden bg-gradient-to-b from-[#0b1726] to-[#070e18]",
+      "table_surface": "radial-gradient(circle at center, #132a45 0%, #0b1726 70%, #060d16 100%)",
+      "seats": {
+        "north": "top-3 left-1/2 -translate-x-1/2 (Partner/Opponent depending on POV)",
+        "south": "bottom-24 sm:bottom-28 left-1/2 -translate-x-1/2 (Current User)",
+        "west": "left-3 top-1/2 -translate-y-1/2 (Opponent 1)",
+        "east": "right-3 top-1/2 -translate-y-1/2 (Opponent 2)"
+      },
+      "center_trick_area": "absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 flex items-center justify-center",
+      "player_hand_fan": "fixed sm:absolute bottom-2 left-1/2 -translate-x-1/2 flex items-end justify-center z-30 pointer-events-auto"
+    },
+    "hud_elements": {
+      "scoreboard": "glassmorphism top-4 left-4 p-3 rounded-xl border border-white/10 backdrop-blur-md bg-black/40",
+      "tens_tracker": "badge counter showing Dehlas (10s) captured by Team A vs Team B with gold icon accents",
+      "trump_indicator": "top-4 right-4 flex items-center gap-2 px-3 py-1.5 rounded-full border border-amber-400/40 bg-black/60 shadow-lg text-amber-400 font-semibold"
+    }
+  },
+  "card_component_styling": {
+    "card_face": "w-14 h-20 sm:w-16 sm:h-24 md:w-20 md:h-28 rounded-lg bg-white text-slate-900 border border-slate-200 shadow-md flex flex-col justify-between p-1.5 select-none transition-transform duration-200 hover:-translate-y-3 cursor-pointer",
+    "card_back": "w-14 h-20 sm:w-16 sm:h-24 md:w-20 md:h-28 rounded-lg bg-gradient-to-br from-indigo-900 via-blue-950 to-slate-950 border border-amber-400/40 shadow-md flex items-center justify-center p-1",
+    "card_red_suit": "text-rose-600",
+    "card_black_suit": "text-slate-900",
+    "card_selected": "ring-2 ring-amber-400 -translate-y-4 shadow-amber-500/40 shadow-lg"
+  },
+  "button_styles": {
+    "primary": "bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold px-5 py-2.5 rounded-xl shadow-lg shadow-amber-500/20 active:scale-95 transition-all",
+    "secondary": "bg-secondary/80 hover:bg-secondary text-foreground font-semibold px-4 py-2 rounded-xl border border-border/60 backdrop-blur-md active:scale-95 transition-all",
+    "table_action": "bg-black/60 hover:bg-black/80 text-amber-300 border border-amber-400/30 px-3 py-1.5 rounded-lg text-xs tracking-wider uppercase font-bold active:scale-95 transition-all"
+  },
+  "images": [
+    {
+      "category": "hero_cards_pile",
+      "description": "Playing cards spread for landing hero section background and room deck visuals",
+      "url": "https://images.unsplash.com/photo-1541278107931-e006523892df?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzh8MHwxfHNlYXJjaHwxfHxpbmRpYW4lMjBjYXJkJTIwZ2FtZSUyMHBsYXlpbmclMjBjYXJkc3xlbnwwfHx8fDE3OTU1MTEzODR8MA&ixlib=rb-4.1.0&q=85"
+    },
+    {
+      "category": "cards_collection_art",
+      "description": "Six card illustration display for game rules and Dehla Pakad cards showcase",
+      "url": "https://images.unsplash.com/photo-1646809020745-9f128818262a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzh8MHwxfHNlYXJjaHwyfHxpbmRpYW4lMjBjYXJkJTIwZ2FtZSUyMHBsYXlpbmclMjBjYXJkc3xlbnwwfHx8fDE3OTU1MTEzODR8MA&ixlib=rb-4.1.0&q=85"
+    },
+    {
+      "category": "deck_box_luxury",
+      "description": "Luxury royal cards box for private room lobby, victory chest and tournaments",
+      "url": "https://images.unsplash.com/photo-1568579572569-e4ce0df95215?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzh8MHwxfHNlYXJjaHw0fHxpbmRpYW4lMjBjYXJkJTIwZ2FtZSUyMHBsYXlpbmclMjBjYXJkc3xlbnwwfHx8fDE3OTU1MTEzODR8MA&ixlib=rb-4.1.0&q=85"
+    }
+  ],
+  "testid_conventions": {
+    "game_table": "game-table-container",
+    "seat": "player-seat-${seatIndex}",
+    "user_hand": "player-hand-container",
+    "card": "card-item-${suit}-${rank}",
+    "trick_area": "center-trick-area",
+    "trick_card": "trick-card-${seatIndex}",
+    "trump_selector": "trump-suit-selector",
+    "trump_badge": "trump-indicator-badge",
+    "scoreboard": "match-scoreboard",
+    "tens_counter_team_a": "tens-counter-team-a",
+    "tens_counter_team_b": "tens-counter-team-b",
+    "chat_input": "table-chat-input",
+    "chat_send": "table-chat-send-btn",
+    "emoji_reaction": "reaction-btn-${emoji}",
+    "theme_toggle": "theme-toggle-btn",
+    "create_room_btn": "create-room-btn",
+    "join_room_btn": "join-room-btn",
+    "start_game_btn": "start-game-btn",
+    "leave_table_btn": "leave-table-btn"
+  },
+  "instructions_to_main_agent": [
+    "Load Google Fonts (Cinzel, Plus Jakarta Sans, JetBrains Mono) into public/index.html or @import in index.css.",
+    "Implement Dehla Pakad complete flow: 4 seats (North/South = Team 1, East/West = Team 2), dealer rotates clockwise, 13 cards each.",
+    "First player after dealer leads; if player cannot follow suit, trump is declared/revealed.",
+    "Tens capture logic: When consecutive tricks are won by same team or a trick with 10s is collected, increment team tens count.",
+    "Special victory conditions: 4 Tens = Koth (White wash / clean sweep), 13 consecutive tricks = Grand Slam (13 Mann).",
+    "Interactive UI must include: Live Chat drawer/popup, audio toggle, emoji quick reactions on avatars, active player turn pulse, responsive hand fan layout.",
+    "Ensure both Light Mode and Dark Mode are supported seamlessly with next-themes or state toggle.",
+    "Strictly follow all kebab-case data-testid tags in testid_conventions for automated testing verification."
+  ]
+}
