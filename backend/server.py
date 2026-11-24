@@ -389,7 +389,21 @@ async def leave_all_lobbies(uid):
         await _leave(room, uid)
 
 
+async def _dissolve_public(room, removed):
+    """A public lobby never runs short-handed: remaining players go back to the front of the queue."""
+    await db.rooms.delete_one({"code": room["code"], "status": "lobby"})
+    keep = [s for s in room["seats"] if s and s not in removed]
+    for u in reversed(keep):
+        if u not in mm_queue:
+            mm_queue.insert(0, u)
+    await hub.send_many(keep, {"type": "requeued", "code": room["code"]})
+    await hub.send_many(list(removed), {"type": "room_left", "code": room["code"]})
+    await _try_match()
+
+
 async def _leave(room, uid):
+    if room.get("is_public"):
+        return await _dissolve_public(room, {uid})
     seats = [None if s == uid else s for s in room["seats"]]
     ready = {k: v for k, v in room.get("ready", {}).items() if k != uid}
     if not any(seats):
@@ -487,6 +501,8 @@ async def invite(code: str, body: InviteIn, member: dict = Depends(player)):
         raise HTTPException(409, "Invitations are only for private lobbies")
     if not await db.friends.find_one({"user_id": member["user_id"], "friend_id": body.user_id}):
         raise HTTPException(403, "You can only invite friends")
+    if await db.invitations.find_one({"from_id": member["user_id"], "to_id": body.user_id, "room_code": room["code"], "status": "pending"}):
+        raise HTTPException(409, "Already invited")
     inv = {"id": str(uuid.uuid4()), "from_id": member["user_id"], "from_username": member["username"],
            "to_id": body.user_id, "room_code": room["code"], "status": "pending", "created_at": now_iso()}
     await db.invitations.insert_one(dict(inv))
@@ -528,20 +544,41 @@ async def mm_join(member: dict = Depends(player)):
     uid = member["user_id"]
     if games.active_game_for(uid):
         raise HTTPException(409, "You are already in an active game")
+    await leave_all_lobbies(uid)
     async with mm_lock:
-        await leave_all_lobbies(uid)
         if uid not in mm_queue:
             mm_queue.append(uid)
-        if len(mm_queue) >= 4:
-            group = [mm_queue.pop(0) for _ in range(4)]
-            random.SystemRandom().shuffle(group)
-            room = {"code": await new_code(), "host_id": None, "is_public": True, "status": "lobby", "target": 7,
-                    "dealer_seat": secrets.randbelow(4), "seats": group, "ready": {}, "created_at": now_iso()}
-            await db.rooms.insert_one(dict(room))
-            await hub.send_many(group, {"type": "match_found", "code": room["code"]})
-            if uid in group:
-                return {"queued": False, "room_code": room["code"]}
+    code = await _try_match(uid)
+    if code:
+        return {"queued": False, "room_code": code}
+    if uid not in mm_queue:
+        return await mm_status(member)
     return {"queued": True, "position": mm_queue.index(uid) + 1, "waiting": len(mm_queue)}
+
+
+READY_TIMEOUT = 60
+
+
+async def _try_match(uid=None):
+    async with mm_lock:
+        if len(mm_queue) < 4:
+            return None
+        group = [mm_queue.pop(0) for _ in range(4)]
+    random.SystemRandom().shuffle(group)
+    room = {"code": await new_code(), "host_id": None, "is_public": True, "status": "lobby", "target": 7,
+            "dealer_seat": secrets.randbelow(4), "seats": group, "ready": {}, "created_at": now_iso()}
+    await db.rooms.insert_one(dict(room))
+    await hub.send_many(group, {"type": "match_found", "code": room["code"], "ready_timeout": READY_TIMEOUT})
+    asyncio.create_task(_ready_deadline(room["code"]))
+    return room["code"] if uid in group else None
+
+
+async def _ready_deadline(code):
+    await asyncio.sleep(READY_TIMEOUT)
+    room = await db.rooms.find_one({"code": code, "status": "lobby"}, {"_id": 0})
+    if room:
+        idle = {u for u in room["seats"] if u and not room.get("ready", {}).get(u)}
+        await _dissolve_public(room, idle)
 
 
 @api_router.get("/matchmaking/status")
@@ -704,6 +741,8 @@ async def ws_endpoint(ws: WebSocket, token: str = ""):
         pass
     finally:
         if hub.remove(uid, ws):
+            if uid in mm_queue:
+                mm_queue.remove(uid)
             await db.users.update_one({"user_id": uid}, {"$set": {"last_seen": now_iso()}})
             await notify_presence(uid)
 

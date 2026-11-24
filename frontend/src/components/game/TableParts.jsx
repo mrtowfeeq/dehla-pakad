@@ -61,7 +61,7 @@ const FROM = [{ x: 0, y: 260 }, { x: 300, y: 0 }, { x: 0, y: -260 }, { x: -300, 
 
 export function TrickArea({ cards, mySeat, winner }) {
   return (
-    <div className="absolute left-1/2 top-[42%] -translate-x-1/2 -translate-y-1/2 w-60 h-56 sm:w-72 sm:h-64 z-10" data-testid="center-trick-area">
+    <div className="absolute left-1/2 top-[47%] sm:top-[42%] -translate-x-1/2 -translate-y-1/2 w-60 h-56 sm:w-72 sm:h-64 z-10" data-testid="center-trick-area">
       <div className="absolute inset-6 rounded-full border border-amber-200/10" />
       <AnimatePresence>
         {cards.map(([seat, card], i) => {

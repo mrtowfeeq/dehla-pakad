@@ -7,13 +7,15 @@ export function MatchRow({ m, meId }) {
   const [open, setOpen] = useState(false);
   const mine = m.players.find((p) => p.user_id === meId);
   const won = mine && mine.team === m.winner_team;
+  const my = mine ? mine.team : 0;
+  const forfeit = m.forfeited_by !== null && m.forfeited_by !== undefined;
   return (
     <div className="panel" data-testid={`match-row-${m.id}`}>
       <button className="w-full p-4 flex flex-wrap items-center gap-4 text-left" onClick={() => setOpen((o) => !o)}>
         <span className={`text-xs font-black tracking-widest w-14 ${won ? "text-emerald-400" : "text-rose-400"}`}>{won ? "WIN" : "LOSS"}</span>
-        <span className="font-mono text-lg"><span className="text-team-a">{m.scores[0]}</span>–<span className="text-team-b">{m.scores[1]}</span></span>
+        <span className="font-mono text-lg" title="Your team – opponents"><span className={my === 0 ? "text-team-a" : "text-team-b"}>{m.scores[my]}</span>–<span className={my === 0 ? "text-team-b" : "text-team-a"}>{m.scores[1 - my]}</span></span>
         <div className="flex -space-x-2">{m.players.map((p) => <PlayerAvatar key={p.seat} user={p} size={28} />)}</div>
-        <span className="text-xs text-muted-foreground">{m.is_public ? "Public" : "Private"} · to {m.target} · {m.rounds.length} rounds</span>
+        <span className="text-xs text-muted-foreground">{m.is_public ? "Public" : "Private"} · to {m.target} · {m.rounds.length} round{m.rounds.length === 1 ? "" : "s"}{forfeit ? " · Forfeit" : ""}</span>
         <span className="ml-auto text-xs text-muted-foreground">{new Date(m.finished_at).toLocaleString()}</span>
       </button>
       {open && (

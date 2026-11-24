@@ -90,6 +90,8 @@ async def main():
 
     # privacy: no other player's cards ever in a player's payload
     def check_privacy():
+        if len({p.state["state"]["seq"] for p in ps}) != 1:
+            return  # states mid-broadcast; compare only identical snapshots
         hands = {p.state["state"]["my_seat"]: set(p.state["state"]["hand"]) for p in ps}
         for p in ps:
             seat = p.state["state"]["my_seat"]

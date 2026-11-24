@@ -165,10 +165,13 @@ class GameService:
         await self.db.matches.insert_one({
             "id": str(uuid.uuid4()), "game_id": game["id"], "room_code": game["room_code"], "is_public": game["is_public"],
             "players": game["players"], "player_ids": [p["user_id"] for p in game["players"]],
-            "scores": s["scores"], "target": s["target"], "winner_team": wt, "rounds": s["rounds"],
+            "scores": s["scores"], "target": s["target"], "winner_team": wt, "rounds": s["rounds"], "forfeited_by": s.get("forfeited_by"),
             "started_at": game["created_at"], "finished_at": now_iso()})
         await self.db.rooms.update_one({"code": game["room_code"]}, {"$set": {"status": "finished"}})
         self.games.pop(game["id"], None)
+        timer = self.timers.pop(game["id"], None)
+        if timer and not timer.done() and timer is not asyncio.current_task():
+            timer.cancel()
 
     def _schedule_next(self, gid):
         old = self.timers.get(gid)

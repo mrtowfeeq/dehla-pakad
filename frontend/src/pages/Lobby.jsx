@@ -68,6 +68,8 @@ export default function Lobby() {
   useSocketEvent((m) => {
     if (m.type === "room_update" && m.room.code === code) setRoom(m.room);
     if (m.type === "game_started" && m.room_code === code) navigate(`/game/${m.game_id}`);
+    if (m.type === "requeued" && m.code === code) { toast("A player left — you're back at the front of the queue."); navigate("/play"); }
+    if (m.type === "room_left" && m.code === code) navigate(room?.is_public ? "/play" : "/home");
   });
 
   if (!room) return <div className="text-muted-foreground" data-testid="lobby-loading">Loading lobby…</div>;
@@ -88,7 +90,8 @@ export default function Lobby() {
     setSel(null);
   };
   const shuffleTeams = () => {
-    const ids = room.seats.map((p) => p?.user_id || null).sort(() => Math.random() - 0.5);
+    const ids = room.seats.map((p) => p?.user_id || null);
+    for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [ids[i], ids[j]] = [ids[j], ids[i]]; }
     call(() => api.post(`/rooms/${code}/seats`, { seats: ids }));
   };
   const leave = async () => { await call(() => api.post(`/rooms/${code}/leave`)); navigate("/home"); };
@@ -144,7 +147,7 @@ export default function Lobby() {
           ) : (
             <div className="text-sm text-muted-foreground">
               Dealer: <b className="text-foreground">{room.seats[room.dealer_seat]?.username || `Seat ${room.dealer_seat + 1}`}</b> · Target <b className="text-foreground">{room.target}</b>
-              <div className="mt-1">{room.is_public ? "The game starts automatically when all four are ready." : "The host starts the game when everyone is ready."}</div>
+              <div className="mt-1">{room.is_public ? "The game starts automatically when all four are ready. Players not ready within 60 seconds are removed." : "The host starts the game when everyone is ready."}</div>
             </div>
           )}
           <button data-testid="ready-toggle-btn" className={myReady ? "btn-ghost w-full" : "btn-gold w-full"}

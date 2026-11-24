@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
-import { Trophy } from "lucide-react";
+import { Trophy, Flag } from "lucide-react";
 import { PlayingCard } from "@/components/PlayingCard";
 import { PlayerAvatar } from "@/components/PlayerAvatar";
 import { SUIT_SYMBOL, SUIT_NAME, TEAM_NAME, VICTORY_LABEL, REASON_LABEL, isRed } from "@/lib/api";
@@ -109,7 +109,7 @@ export function MatchOver({ st, players, mySeat }) {
   return (
     <Modal testId="victory-screen">
       <div className="text-center">
-        <Trophy className="mx-auto text-amber-300" size={40} />
+        {won ? <Trophy className="mx-auto text-amber-300" size={40} /> : <Flag className="mx-auto text-rose-300" size={36} />}
         <p className="eyebrow mt-3 !text-amber-200/80">{won ? "Victory" : "Defeat"}</p>
         <h2 className="font-display text-3xl mt-1" data-testid="victory-winning-team">{TEAM_NAME[wt]} wins the match</h2>
         <p className="text-sm text-white/70 mt-2" data-testid="victory-type">
@@ -132,7 +132,7 @@ export function MatchOver({ st, players, mySeat }) {
           </div>
         ))}
       </div>
-      <div className="text-xs text-white/50 mt-3">{st.rounds.length} rounds played</div>
+      <div className="text-xs text-white/50 mt-3">{st.rounds.length} round{st.rounds.length === 1 ? "" : "s"} played</div>
       <div className="grid grid-cols-2 gap-3 mt-6">
         <Link to="/history" className="btn-ghost !bg-white/5 !border-white/15 text-white" data-testid="victory-history-btn">Match history</Link>
         <Link to="/home" className="btn-gold" data-testid="victory-home-btn">Back to home</Link>
