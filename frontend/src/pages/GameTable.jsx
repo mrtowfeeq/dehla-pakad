@@ -104,7 +104,7 @@ export default function GameTable() {
               {unread > 0 && <span className="absolute -top-1 -right-1 h-4 min-w-4 px-1 rounded-full bg-rose-500 text-[10px] font-bold" data-testid="chat-unread-badge">{unread}</span>}
             </button>
           </div>
-          <div className="text-[11px] text-white/70 text-right font-mono" data-testid="round-info">
+          <div className="text-[11px] text-white/70 text-right font-mono whitespace-nowrap" data-testid="round-info">
             Round {st.round_no} · Trick {Math.min(st.tricks_played + (st.trick.length ? 1 : 0), 13)}/13
             {st.koth !== null && <div className="text-amber-300 font-sans font-bold" data-testid="koth-active-badge">KOTH · {TEAM_NAME[st.koth]}</div>}
             {st.gs_declared !== null && <div className="text-rose-300 font-sans font-bold" data-testid="grand-slam-active-badge">GRAND SLAM · {TEAM_NAME[st.gs_declared]}</div>}

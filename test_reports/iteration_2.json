@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 2 checked the six fixes against the public URL. All six work. New suite tests/test_matchmaking_fixes.py: 6 of 6 pass (about 113s, because one test waits out the 60s ready timeout). Regression (test_engine.py + test_multiuser_api.py, -n 0): 101 of 101 pass. FIX 1: a player leaving a public lobby dissolves the room. The other 3 get WS 'requeued' and go to queue positions 1-3, and the room returns 404. The leaver gets 'room_left' and is no longer queued. A 5th player joining forms a new public room (new code, host_id None) with the 3 requeued players. Creating a private room from a public lobby also dissolves it and requeues the others. Re-joining the queue also dissolves it (see minor note). UI: the browser user is matched with 3 API users. When one leaves, the lobby shows the toast 'A player left — you're back at the front of the queue.' and goes to /play, which shows 'Searching… 3/4'. When the 5th joins, the browser goes to a new lobby with the right 4 players. FIX 2: match_found carries ready_timeout=60. The room still exists at 30s and is dissolved by 63s. The 2 ready players are requeued and the 2 idle ones get room_left and are not queued. The public lobby shows the '60 seconds' text and no Start button. FIX 3: inviting the same friend twice returns 409 'Already invited', and only 1 invitation is pending. Re-inviting after a decline works. FIX 4: at 390x800, a bot played a full round while I checked bounding boxes every 1.2s. No trick card overlapped the north seat in any check, and the partner's 'N cards' label is visible. FIX 5: after a forfeit, the losing-team player sees a Flag icon and the winning-team player sees a Trophy. History rows show 0–1 for the loser and 1–0 for the winner, '1 round' singular, and '· Forfeit'. FIX 6: closing 1 of 2 sockets keeps the user queued; closing the last one removes them. Desktop table smoke passed (4 seats, scoreboard, trump, hand of 13). No new backend 500s; the only traceback in backend.err.log is an old hot-reload import error.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/matchmaking/join (called from inside a public lobby)", "issue": "Re-joining the queue from a public lobby dissolves the room and puts the other 3 at the front of the queue, then appends the leaver. If nobody else is waiting, the queue holds exactly those 4 and they are immediately re-matched into a new room with the same players (seen: the old room was replaced by QSSMLX with the same 4 users). It works, but the leaver cannot really get away from that table. Consider skipping the original group-mates when forming the next match, or putting the leaver at the back after a short cooldown."},
+      {"endpoint": "_ready_deadline / startup", "issue": "The ready deadline is an in-memory asyncio task, and the queue is in memory too. After a backend restart or hot reload, public rooms in 'lobby' status have no deadline, so one AFK player can stall them forever again. On startup, either dissolve leftover public lobbies or re-arm their deadlines."},
+      {"endpoint": "_dissolve_public", "issue": "The delete_one result is not checked. If the room already moved to 'starting'/'playing' (a race between the last ready and the deadline or a leave), players would still be requeued and sent 'requeued'. Return early when deleted_count == 0. Also, players requeued by dissolve are not checked for an open WebSocket, so a ready player who has since closed the tab is put back in the queue."},
+      {"endpoint": "server.py", "issue": "776 lines, over the 700-line guideline. Split it into routers."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Game table - small phones 360x740", "issues": ["The scoreboard wraps 'TEAM A (YOU)' onto 2 lines, and its bottom edge (y=156) overlaps the partner's avatar top (y=150) by about 6px.", "The trick area top (y=236) is about 48px above the bottom of the north seat (y=283), so at 360px wide the north trick card is likely to cover the partner's '13 cards' label. 390px wide is fine.", "'Round 1 · Trick 0/13' wraps onto 2 lines."]},
+      {"screen": "Victory screen", "issues": ["The final score is always shown as Team A – Team B (0 – 1), while History now shows it from my team's side. This is minor and the teams are labelled, but it is inconsistent."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_matchmaking_fixes.py", "/app/backend/tests/ui_mm_driver.py", "/app/backend/tests/forfeit.py", "/app/test_reports/pytest/iter2_mm.xml", "/app/test_reports/pytest/iter2_regression.xml"],
+  "action_items": [
+    "Optional: stop the immediate re-match of the same 4 players when one of them re-joins the queue from a public lobby.",
+    "Optional: on startup, handle public lobbies left without a ready deadline after a restart.",
+    "Optional: in _dissolve_public, return early if delete_one removed nothing.",
+    "Optional: tighten the mobile table layout at 360px wide (scoreboard / north seat / trick area)."
+  ],
+  "critical_code_review_comments": [
+    "_dissolve_public changes mm_queue without mm_lock. This is safe today because there is no await between the checks and the inserts, but it is inconsistent with mm_join and mm_leave.",
+    "Lobby.leave() always navigates to /home, even for public lobbies. That is fine, but room_left for public rooms navigates to /play, which is inconsistent."
+  ],
+  "updated_files": ["/app/backend/tests/test_matchmaking_fixes.py", "/app/backend/tests/ui_mm_driver.py", "/app/backend/tests/forfeit.py"],
+  "success_rate": {"backend": "100% (6/6 new + 101/101 regression)", "frontend": "100% of fixes verified"},
+  "seed_data_creation": "Clerk +clerk_test users created by the tests (mm<RUN>_*, ui721419228_*, e2e2848_*, e2e9040_*). Both demo games were ended by forfeit. Private rooms were left and are deleted when empty, and the queue was cleaned.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: pytest tests/test_matchmaking_fixes.py -n 0 -v -s (takes about 2 minutes). Do not run it at the same time as test_multiuser_api.py, because both use the shared in-memory queue. UI requeue flow: python tests/ui_mm_driver.py setup <RUN> prints a ticket for player 1; then start 'drive <RUN>' in the background and, in the browser, join the queue on /play. tests/forfeit.py <RUN> <i> <gid> ends a game. The Grand Slam modal is still not exercised in the UI."
+}

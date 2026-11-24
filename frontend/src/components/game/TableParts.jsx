@@ -9,7 +9,7 @@ export const relOf = (seat, mySeat) => (seat - mySeat + 4) % 4;
 const SEAT_POS = [
   "bottom-[118px] sm:bottom-[190px] left-1/2 -translate-x-1/2",
   "right-2 sm:right-6 top-[42%] -translate-y-1/2",
-  "top-[150px] sm:top-5 left-1/2 -translate-x-1/2",
+  "top-[158px] sm:top-5 left-1/2 -translate-x-1/2",
   "left-2 sm:left-6 top-[42%] -translate-y-1/2",
 ];
 

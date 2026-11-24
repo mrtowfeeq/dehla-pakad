@@ -42,10 +42,10 @@ export function Scoreboard({ st, mySeat }) {
   const myTeam = mySeat % 2;
   return (
     <div className="rounded-xl border border-white/10 bg-black/45 backdrop-blur-md p-2.5 sm:p-3 text-white" data-testid="match-scoreboard">
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-3 sm:gap-4 whitespace-nowrap">
         {[0, 1].map((t) => (
           <div key={t} className="min-w-[64px]">
-            <div className={`text-[10px] font-bold uppercase tracking-wider ${t === 0 ? "text-team-a" : "text-team-b"}`}>{TEAM_NAME[t]}{t === myTeam ? " (you)" : ""}</div>
+            <div className={`text-[10px] font-bold uppercase tracking-wider ${t === 0 ? "text-team-a" : "text-team-b"}`}>{TEAM_NAME[t]}{t === myTeam ? " •" : ""}</div>
             <div className="font-mono text-2xl font-bold leading-none mt-0.5" data-testid={`score-team-${t === 0 ? "a" : "b"}`}>{st.scores[t]}<span className="text-xs text-white/50">/{st.target}</span></div>
             <div className="text-[10px] text-white/60 mt-0.5" data-testid={`tricks-team-${t === 0 ? "a" : "b"}`}>Tricks {st.tricks_won[t]}</div>
           </div>

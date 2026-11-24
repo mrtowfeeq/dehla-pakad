@@ -391,8 +391,10 @@ async def leave_all_lobbies(uid):
 
 async def _dissolve_public(room, removed):
     """A public lobby never runs short-handed: remaining players go back to the front of the queue."""
-    await db.rooms.delete_one({"code": room["code"], "status": "lobby"})
-    keep = [s for s in room["seats"] if s and s not in removed]
+    res = await db.rooms.delete_one({"code": room["code"], "status": "lobby"})
+    if res.deleted_count == 0:
+        return
+    keep = [s for s in room["seats"] if s and s not in removed and hub.online(s)]
     for u in reversed(keep):
         if u not in mm_queue:
             mm_queue.insert(0, u)
@@ -700,17 +702,22 @@ async def handle_social(uid, msg):
 
 @app.websocket("/api/ws")
 async def ws_endpoint(ws: WebSocket, token: str = ""):
+    # The app sends its token in the first message (kept out of access logs); ?token= is accepted for scripts.
+    await ws.accept()
     try:
+        if not token:
+            first = await asyncio.wait_for(ws.receive_json(), timeout=10)
+            token = str(first.get("token", "")) if isinstance(first, dict) else ""
         claims = await run_in_threadpool(verify_session_token, token)
-    except HTTPException:
-        await ws.close(code=4401)
+    except (HTTPException, asyncio.TimeoutError, WebSocketDisconnect, ValueError, RuntimeError):
+        with suppress(Exception):
+            await ws.close(code=4401)
         return
     uid = claims["sub"]
     user = await db.users.find_one({"user_id": uid}, {"_id": 0, "username": 1})
     if not user or not user.get("username"):
         await ws.close(code=4428)
         return
-    await ws.accept()
     if hub.add(uid, ws):
         await db.users.update_one({"user_id": uid}, {"$set": {"last_seen": now_iso()}})
         await notify_presence(uid)
@@ -765,6 +772,7 @@ async def startup():
         await db.users.update_many({"role": old}, {"$set": {"role": new}})
     app.state.index_task = asyncio.create_task(ensure_indexes())
     await db.rooms.update_many({"status": "starting"}, {"$set": {"status": "lobby"}})
+    await db.rooms.delete_many({"status": "lobby", "is_public": True})  # queue is in-memory; stale public lobbies cannot recover
     await games.load_active()
 
 

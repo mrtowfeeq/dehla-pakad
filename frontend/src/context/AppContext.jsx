@@ -49,12 +49,13 @@ export function AppProvider({ children }) {
       try { token = await getToken(); } catch { token = null; }
       if (stop) return;
       if (!token) { timer = setTimeout(connect, 2000); return; }
-      const ws = new WebSocket(`${WS_URL}?token=${encodeURIComponent(token)}`);
+      const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
-      ws.onopen = () => { retry = 0; setConnected(true); };
+      ws.onopen = () => ws.send(JSON.stringify({ type: "auth", token }));
       ws.onmessage = (e) => {
         let msg;
         try { msg = JSON.parse(e.data); } catch { return; }
+        if (msg.type === "hello") { retry = 0; setConnected(true); }
         listeners.current.forEach((fn) => fn(msg));
       };
       ws.onclose = () => {
