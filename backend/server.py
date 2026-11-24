@@ -518,11 +518,12 @@ async def add_bot(code: str, member: dict = Depends(player)):
     taken = {b["username"] for b in bots.values()}
     name = next(f"Bot {n}" for n in BOT_NAMES if f"Bot {n}" not in taken)
     bid = f"bot_{uuid.uuid4().hex[:12]}"
-    seats = list(room["seats"])
-    seats[seats.index(None)] = bid
-    bots[bid] = {"username": name, "avatar_color": random.choice(AVATAR_COLORS), "avatar_icon": "bot"}
-    await db.rooms.update_one({"code": room["code"], "status": "lobby"}, {"$set": {"seats": seats, "bots": bots}})
-    room.update(seats=seats, bots=bots)
+    bot = {"username": name, "avatar_color": random.choice(AVATAR_COLORS), "avatar_icon": "bot"}
+    room = await db.rooms.find_one_and_update(
+        {"code": room["code"], "status": "lobby", "seats": None},
+        {"$set": {"seats.$": bid, f"bots.{bid}": bot}}, projection={"_id": 0}, return_document=ReturnDocument.AFTER)
+    if not room:
+        raise HTTPException(409, "Room is full")
     return await broadcast_room(room)
 
 
@@ -533,10 +534,11 @@ async def remove_bot(code: str, bot_id: str, member: dict = Depends(player)):
     bots = room.get("bots") or {}
     if bot_id not in bots:
         raise HTTPException(404, "Bot not found")
-    bots.pop(bot_id)
-    seats = [None if s == bot_id else s for s in room["seats"]]
-    await db.rooms.update_one({"code": room["code"]}, {"$set": {"seats": seats, "bots": bots}})
-    room.update(seats=seats, bots=bots)
+    room = await db.rooms.find_one_and_update(
+        {"code": room["code"], "status": "lobby", "seats": bot_id},
+        {"$set": {"seats.$": None}, "$unset": {f"bots.{bot_id}": ""}}, projection={"_id": 0}, return_document=ReturnDocument.AFTER)
+    if not room:
+        raise HTTPException(409, "The game has started")
     return await broadcast_room(room)
 
 

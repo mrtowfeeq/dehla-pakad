@@ -9,7 +9,7 @@ import { MatchRow } from "@/pages/History";
 
 export default function Profile() {
   const { username } = useParams();
-  const { api, me } = useApp();
+  const { api, connected } = useApp();
   const [p, setP] = useState(null);
   const [error, setError] = useState(null);
   const load = () => api.get(`/users/${username}`).then((r) => setP(r.data)).catch((e) => setError(errMsg(e)));
@@ -26,9 +26,9 @@ export default function Profile() {
   return (
     <div className="space-y-12" data-testid="profile-page">
       <section className="flex flex-wrap items-center gap-6">
-        <PlayerAvatar user={p} size={88} online={p.online} />
+        <PlayerAvatar user={p} size={88} online={p.is_me ? connected : p.online} />
         <div className="flex-1 min-w-[200px]">
-          <p className="eyebrow">{p.online ? "Online now" : "Offline"}</p>
+          <p className="eyebrow">{(p.is_me ? connected : p.online) ? "Online now" : "Offline"}</p>
           <h1 className="font-display text-4xl mt-1" data-testid="profile-username">{p.username}</h1>
           <p className="text-sm text-muted-foreground mt-1">Joined {p.created_at ? new Date(p.created_at).toLocaleDateString() : "—"}</p>
         </div>
@@ -50,7 +50,6 @@ export default function Profile() {
         <h2 className="eyebrow mb-3">Recent matches</h2>
         {p.recent_matches.length === 0 ? <p className="text-sm text-muted-foreground">No completed matches yet.</p>
           : <div className="space-y-2">{p.recent_matches.map((m) => <MatchRow key={m.id} m={m} meId={p.user_id} />)}</div>}
-        {p.is_me && <span className="hidden">{me.username}</span>}
       </section>
     </div>
   );

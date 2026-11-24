@@ -20,6 +20,12 @@ Build a complete production-quality online multiplayer Dehla Pakad card game (4 
 - Game table: seats, teams, scores, trump, trick animation, captured tens, tricks, turn, connection/offline badges, Koth/Grand Slam prompts (one-time partner reveal), round result, victory screen, last-trick peek, chat drawer, emoji reactions, forfeit
 - Friends (search/request/accept/remove, presence), invitations (toast + dashboard), history, profile stats, leaderboard, settings (username/avatar/theme/account), admin page (users/roles/stats), PWA manifest
 
+## Iteration 2 (2026-06) — Bots
+- Host can add/remove bots or fill empty private-room seats (bots always ready, swappable seats)
+- Smart server-side bots (bots.py): choose trump, play legal cards using public info only, give tens to a winning partner, Koth/Grand Slam decisions only when the whole team is bots (human partner decides otherwise)
+- Bot games are practice: no stats/leaderboard changes; history labelled "Practice vs bots"
+- Tests: tests/test_bots.py (31 pass; smart bots beat random 195/200), tests/e2e_bots.py live 1 human + 3 bots match passed
+
 ## Backlog
 - P1: AFK turn timer option, spectator mode, rematch button
 - P2: sound effects, ELO rating, custom logo upload, push notifications

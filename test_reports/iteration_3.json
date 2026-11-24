@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 3 tested the bot feature on the public URL. Everything requested works. Regression: tests/test_engine.py + tests/test_bots.py, 114 of 114 pass. New suite tests/test_bots_api.py: 5 of 5 pass (about 82s). It covers: add a bot (seat 1, 'Bot Arjun', is_bot, ready=true); fill all seats; adding when full returns 409; remove a bot; removing an unknown bot returns 404; a non-host adding or removing a bot gets 403; a second human joins a free seat by invite code; when the host leaves, host passes to the remaining human; when that human leaves and only bots remain, the room is deleted (404). Seat swaps through /seats move bots between partner and opponent seats, and bots stay ready. A host alone with 3 bots cannot start until ready (400), and leaving deletes the room. In a full 1 human + 3 bots match (target 2) over WS, bots stayed online in every state, made 54 moves with about 0.9s between moves, and no action errors occurred. Afterwards /me stats were unchanged, history[0].has_bots was true, and the leaderboard was unchanged with no bot_ ids. A unit test of GameService._bot_turn confirms Koth and Grand Slam are only decided automatically when both seats of the team are bots; for a human + bot team it returns None, so the human gets the prompt. UI (1920x1080): Create room with custom target 2. add-bot-btn put 'Bot Arjun | BOT | READY' in seat 2. bots-practice-note appeared. fill-bots-btn filled the other seats with Bot Meera and Bot Kabir, and the add/fill buttons were hidden when the room was full. remove-bot-2 emptied the seat and add-bot refilled it. Tapping seat 1 then seat 2 swapped the human and a bot. Start stayed disabled until the human was ready, then started the game. On the table, bot-badge-N showed on the 3 bot seats and no offline badges appeared. The human picked trump in the UI. Three rounds played automatically; round-result-modal appeared and the next round started on its own. The victory screen showed 'Team A wins the match 2 – 1' with bot names. The History page shows 'Private · to 2 · 3 rounds · Practice vs bots', and the profile stats did not change (1 GP / 1 W).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/rooms/{code}/bots", "issue": "add_bot reads the room, changes the seats list, then writes the whole list back with $set. A join_room that lands between the read and the write (join_room uses an atomic seats.$ update) would have its seat overwritten, silently removing the human. The add_bot update_one result is also not checked. I tried 6 concurrent add-bot + join pairs over the network and could not reproduce it, but the window exists. Fix: use find_one_and_update with {'seats': None} and 'seats.$': bid, as join_room does, or filter on the old seats array and return 409 if modified_count is 0."},
+      {"endpoint": "DELETE /api/rooms/{code}/bots/{bot_id}", "issue": "The update_one does not filter on status 'lobby'. _host_only checks status first, so the risk is low, but this is inconsistent with add_bot."},
+      {"endpoint": "Clerk dev instance", "issue": "Not an app bug. The instance is at its 100-user quota, so tests/e2e_match.py P(i) with a new RUN now fails with 403 user_quota_exceeded, which also breaks tests/e2e_bots.py and setup_demo_game.py. I reused existing users (RUN=1659). Delete old +clerk_test users, or change the helpers to reuse a fixed RUN."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Profile (own)", "issues": ["The user's own profile showed an 'OFFLINE' badge while the header showed 'Online' and the WS was connected. This was seen once and not investigated; it may be older than the bot feature."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_bots_api.py", "/app/test_reports/pytest/iter3_bots_api.xml", "/app/test_reports/pytest/iter3_regression.xml"],
+  "action_items": [
+    "Optional: make add_bot atomic (find_one_and_update with seats: None) so a human joining at the same moment cannot be overwritten.",
+    "Optional: add status 'lobby' to the remove_bot update filter.",
+    "Optional: check why the user's own profile shows OFFLINE while connected."
+  ],
+  "critical_code_review_comments": [
+    "Lobby 'Fill with bots' sends N sequential POSTs, one per empty seat. It works, but a single bulk endpoint (or a count param) would be faster and atomic.",
+    "_run_bots stops with only a log entry on a GameError. If a bot ever picks an illegal move, the game stalls with no recovery. Consider falling back to legal_cards(...)[0].",
+    "server.py is 829 lines, over the 700-line guideline. Split rooms, bots and matchmaking into routers."
+  ],
+  "updated_files": ["/app/backend/tests/test_bots_api.py"],
+  "success_rate": {"backend": "100% (5/5 new + 114/114 regression)", "frontend": "100% of requested bot flows verified"},
+  "seed_data_creation": "No new Clerk users were created (quota full). I reused player1-3_1659+clerk_test users. Created private rooms were deleted through leave; the two bot-practice matches remain in the history of player3_1659 (QVHBGL is 'finished').",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Clerk dev quota is full (100 users): use BOT_RUN=1659 (or 6710) existing users. Run: cd /app/backend && pytest tests/test_bots_api.py -n 0 -v -s. Get a UI ticket: python /tmp/tk.py 3 style, i.e. e2e_match.RUN=1659; bapi('/sign_in_tokens', {'user_id': uid}). The Koth/Grand Slam prompt for a human with a bot partner was covered only by the _bot_turn unit test, not seen live in the UI."
+}
