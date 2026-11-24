@@ -342,3 +342,14 @@ def test_forfeit_ends_match_for_opponents():
     assert m.s["phase"] == "match_over" and m.s["winner_team"] == 1
     with pytest.raises(GameError):
         m.select_trump(1, "S")
+
+
+def test_cancel_ends_match_without_points():
+    m = Match.new(dealer=0, target=5)
+    m.select_trump(1, "S")
+    m.cancel(3)
+    assert m.s["phase"] == "cancelled" and m.s["scores"] == [0, 0] and m.s["winner_team"] is None
+    with pytest.raises(GameError):
+        m.play(1, m.s["hands"][1][0])
+    with pytest.raises(GameError):
+        m.cancel(0)

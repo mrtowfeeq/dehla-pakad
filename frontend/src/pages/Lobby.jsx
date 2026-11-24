@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { Copy, Crown, Check, LogOut, UserPlus, Shuffle, Bot, X } from "lucide-react";
@@ -7,6 +7,7 @@ import { errMsg, TEAM_NAME } from "@/lib/api";
 import { PlayerAvatar } from "@/components/PlayerAvatar";
 import { TargetPicker } from "@/components/TargetPicker";
 import { ChatPanel } from "@/components/Chat";
+import { sound } from "@/lib/sound";
 
 const POS = ["bottom-0 left-1/2 -translate-x-1/2", "right-0 top-1/2 -translate-y-1/2", "top-0 left-1/2 -translate-x-1/2", "left-0 top-1/2 -translate-y-1/2"];
 
@@ -71,13 +72,37 @@ export default function Lobby() {
   const navigate = useNavigate();
   const [room, setRoom] = useState(null);
   const [sel, setSel] = useState(null);
+  const [countdown, setCountdown] = useState(null);
+  const prevRoom = useRef(null);
+  useEffect(() => {
+    const p = prevRoom.current;
+    prevRoom.current = room;
+    if (!p || !room) return;
+    const seated = (r) => r.seats.filter(Boolean).length;
+    const readyN = (r) => r.seats.filter((x) => x && r.ready[x.user_id]).length;
+    if (seated(room) > seated(p)) sound.play("join");
+    else if (seated(room) < seated(p)) sound.play("leave");
+    if (readyN(room) > readyN(p)) sound.play("ready");
+  }, [room]);
+  const startCountdown = (gid) => {
+    if (countdown !== null) return;
+    let n = 3;
+    setCountdown(n);
+    sound.play("match_start");
+    const t = setInterval(() => {
+      n -= 1;
+      if (n <= 0) { clearInterval(t); navigate(`/game/${gid}`); return; }
+      setCountdown(n);
+      sound.play("tick");
+    }, 800);
+  };
 
   const load = useCallback(() => api.get(`/rooms/${code}`).then((r) => setRoom(r.data)).catch((e) => { toast.error(errMsg(e)); navigate("/home"); }), [api, code, navigate]);
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { if (room?.status === "playing" && room.game_id) navigate(`/game/${room.game_id}`); }, [room, navigate]);
+  useEffect(() => { if (room?.status === "playing" && room.game_id && countdown === null) navigate(`/game/${room.game_id}`); }, [room, navigate]); // eslint-disable-line react-hooks/exhaustive-deps
   useSocketEvent((m) => {
-    if (m.type === "room_update" && m.room.code === code) setRoom(m.room);
-    if (m.type === "game_started" && m.room_code === code) navigate(`/game/${m.game_id}`);
+    if (m.type === "room_update" && m.room.code === code && m.room.status !== "playing") setRoom(m.room);
+    if (m.type === "game_started" && m.room_code === code) startCountdown(m.game_id);
     if (m.type === "requeued" && m.code === code) { toast("A player left — you're back at the front of the queue."); navigate("/play"); }
     if (m.type === "room_left" && m.code === code) navigate(room?.is_public ? "/play" : "/home");
   });
@@ -108,6 +133,12 @@ export default function Lobby() {
 
   return (
     <div className="grid lg:grid-cols-[1fr_340px] gap-10" data-testid="lobby-page">
+      {countdown !== null && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex flex-col items-center justify-center text-white" data-testid="match-start-countdown">
+          <div className="eyebrow !text-amber-200/80">Match starting</div>
+          <div key={countdown} className="font-display text-8xl text-amber-300 rise">{countdown}</div>
+        </div>
+      )}
       <div>
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>

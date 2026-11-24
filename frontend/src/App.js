@@ -9,6 +9,7 @@ import { AppProvider, useApp } from "@/context/AppContext";
 import { AppShell } from "@/components/AppShell";
 import { Onboarding } from "@/components/Onboarding";
 import { GlobalNotifications } from "@/components/GlobalNotifications";
+import { SoundBridge } from "@/components/SoundBridge";
 import Landing from "@/pages/Landing";
 import Dashboard from "@/pages/Dashboard";
 import Matchmaking from "@/pages/Matchmaking";
@@ -45,6 +46,7 @@ function SignedInGate({ children, bare }) {
   return (
     <>
       <GlobalNotifications />
+      <SoundBridge />
       {bare ? children : <AppShell>{children}</AppShell>}
     </>
   );

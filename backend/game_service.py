@@ -121,7 +121,11 @@ class GameService:
             return {"type": "error", "message": "Game not found"}
         seat = self.seat_of(game, uid)
         action = msg.get("action")
+        if action == "exit":
+            return await self.cancel(gid, uid)
         async with self.locks[gid]:
+            if game["status"] != "active":
+                return {"type": "error", "message": "Match has already ended"}
             m = Match(game["state"])
             rounds_before = len(m.s["rounds"])
             try:
@@ -144,6 +148,31 @@ class GameService:
             await self._after_change(game, rounds_before)
         await self.broadcast(game)
         self.kick_bots(gid)
+        return None
+
+    async def cancel(self, gid, uid):
+        """Authoritative, idempotent match-wide cancellation (Exit Match)."""
+        async with self.locks[gid]:
+            game = self.games.get(gid)
+            if not game or game["status"] != "active":
+                return None  # already cancelled/finished: the single broadcast was already sent
+            seat = self.seat_of(game, uid)
+            Match(game["state"]).cancel(seat)
+            game["status"] = "cancelled"
+            game["updated_at"] = now_iso()
+            self.games.pop(gid, None)
+            for tasks in (self.timers, self.bot_tasks):
+                t = tasks.pop(gid, None)
+                if t and not t.done() and t is not asyncio.current_task():
+                    t.cancel()
+            await self.db.games.update_one({"id": gid}, {"$set": {"state": game["state"], "status": "cancelled",
+                                                                  "cancelled_by": uid, "updated_at": game["updated_at"]}})
+            await self.db.rooms.update_one({"code": game["room_code"]}, {"$set": {"status": "cancelled"}})
+            await self._log(gid, "exit_match", seat, {})
+        name = next(p["username"] for p in game["players"] if p["user_id"] == uid)
+        await self.hub.send_many([p["user_id"] for p in game["players"]], {
+            "type": "match_cancelled", "game_id": gid, "room_code": game["room_code"], "by": name,
+            "message": "The match has ended because a player exited."})
         return None
 
     # ---------- bots ----------
@@ -175,10 +204,19 @@ class GameService:
             if not game or not self._bot_turn(game):
                 return
             s = game["state"]
-            await asyncio.sleep(1.7 if not s["trick"] and s["tricks"] and s["phase"] == "playing" else 0.9)
+            # Pace bots to the table: let clients finish dealing / trick-collection animations first.
+            if s["phase"] == "trump_select":
+                delay = 4.5
+            elif s["phase"] == "playing" and not s["tricks"] and not s["trick"]:
+                delay = 3.6
+            elif s["phase"] == "playing" and not s["trick"] and s["tricks"]:
+                delay = 1.9
+            else:
+                delay = 0.9
+            await asyncio.sleep(delay)
             async with self.locks[gid]:
                 game = self.games.get(gid)
-                turn = game and self._bot_turn(game)
+                turn = game and game["status"] == "active" and self._bot_turn(game)
                 if not turn:
                     return
                 action, seat = turn

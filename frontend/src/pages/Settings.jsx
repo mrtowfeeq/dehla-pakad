@@ -5,6 +5,7 @@ import { useClerk } from "@clerk/react";
 import { useApp } from "@/context/AppContext";
 import { errMsg } from "@/lib/api";
 import { AvatarPicker } from "@/components/AvatarPicker";
+import { SoundSettings } from "@/components/SoundSettings";
 
 export default function Settings() {
   const { api, me, refreshMe } = useApp();
@@ -46,6 +47,10 @@ export default function Settings() {
               className={`px-5 py-2.5 rounded-xl border font-semibold capitalize ${resolvedTheme === t ? "border-primary bg-primary/10" : "border-border"}`}>{t}</button>
           ))}
         </div>
+      </section>
+      <section className="space-y-4 max-w-md">
+        <h2 className="font-bold text-lg">Sound</h2>
+        <SoundSettings />
       </section>
       <section className="space-y-3">
         <h2 className="font-bold text-lg">Account & security</h2>

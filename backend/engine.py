@@ -200,6 +200,17 @@ class Match:
         s["forfeited_by"] = seat
         self._event("forfeit", seat=seat)
 
+    def cancel(self, seat):
+        """Exit Match: ends the whole match for everyone, no points awarded."""
+        s = self.s
+        if s["phase"] in ("match_over", "cancelled"):
+            raise GameError("Match has already ended")
+        s["phase"] = "cancelled"
+        s["turn"] = None
+        s["koth_decision"] = None
+        s["cancelled_by"] = seat
+        self._event("cancelled", seat=seat)
+
     # ---------- resolution ----------
     def _complete_trick(self):
         s = self.s
@@ -294,7 +305,7 @@ class Match:
             "legal": sort_hand(legal_cards(hand, s["trick"])) if s["phase"] == "playing" and s["turn"] == seat else [],
             "koth": s["koth"], "koth_decision": s["koth_decision"], "gs_eligible": s["gs_eligible"],
             "gs_declared": s["gs_declared"], "result": s["result"], "rounds": s["rounds"],
-            "winner_team": s["winner_team"], "my_seat": seat, "forfeited_by": s.get("forfeited_by"),
+            "winner_team": s["winner_team"], "my_seat": seat, "forfeited_by": s.get("forfeited_by"), "cancelled_by": s.get("cancelled_by"),
             "partner_hand": sort_hand(s["hands"][partner(seat)]) if show_partner else None,
             "seq": s["seq"],
         }

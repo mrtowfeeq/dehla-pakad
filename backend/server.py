@@ -655,6 +655,15 @@ async def get_game(game_id: str, member: dict = Depends(player)):
     return games.view_for(game, member["user_id"])
 
 
+@api_router.post("/games/{game_id}/exit")
+async def exit_game(game_id: str, member: dict = Depends(player)):
+    game = await games.get(game_id)
+    if not game or games.seat_of(game, member["user_id"]) is None:
+        raise HTTPException(404, "Game not found")
+    await games.cancel(game_id, member["user_id"])
+    return {"ok": True, "status": "cancelled"}
+
+
 @api_router.get("/matches")
 async def match_history(username: Optional[str] = None, member: dict = Depends(player)):
     uid = member["user_id"]

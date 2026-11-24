@@ -5,15 +5,20 @@ import { Trophy, Flag } from "lucide-react";
 import { PlayingCard } from "@/components/PlayingCard";
 import { PlayerAvatar } from "@/components/PlayerAvatar";
 import { SUIT_SYMBOL, SUIT_NAME, TEAM_NAME, VICTORY_LABEL, REASON_LABEL, isRed } from "@/lib/api";
+import { sound } from "@/lib/sound";
+import { Burst } from "@/components/game/Effects";
 
-function Modal({ children, testId }) {
+function Modal({ children, testId, delay = 0, tone }) {
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-sm p-4" data-testid={testId}>
-      <motion.div initial={{ opacity: 0, y: 24, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }}
-        className="w-full max-w-md rounded-2xl border border-amber-400/30 bg-[#0d1626]/95 text-white p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
+    <motion.div className="absolute inset-0 z-50 flex items-center justify-center bg-black/55 backdrop-blur-sm p-4" data-testid={testId}
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay }}>
+      <motion.div initial={{ opacity: 0, y: 24, scale: 0.96 }} animate={tone === "loss" ? { opacity: 1, y: 0, scale: 1, x: [0, -6, 6, -3, 0] } : { opacity: 1, y: 0, scale: 1 }}
+        transition={{ delay, duration: 0.45 }}
+        className={`relative w-full max-w-md rounded-2xl border bg-[#0b1a17]/95 text-white p-6 shadow-2xl max-h-[90vh] overflow-y-auto ${tone === "loss" ? "border-rose-400/30" : "border-amber-400/30"}`}>
+        {tone === "win" && <Burst />}
         {children}
       </motion.div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -83,10 +88,12 @@ export function RoundResult({ result, mySeat, players }) {
     const t = setInterval(() => setLeft((x) => Math.max(0, x - 1)), 1000);
     return () => clearInterval(t);
   }, []);
+  useEffect(() => { if (left > 0 && left <= 3) sound.play("tick", { gain: 0.6 }); }, [left]);
   const won = result.winner_team === mySeat % 2;
   const nd = players.find((p) => p.seat === result.next_dealer);
+  const special = result.type !== "normal";
   return (
-    <Modal testId="round-result-modal">
+    <Modal testId="round-result-modal" delay={1.4} tone={won && special ? "win" : !won && special ? "loss" : undefined}>
       <p className={`eyebrow ${won ? "!text-emerald-300" : "!text-rose-300"}`}>{won ? "Your team wins the round" : "Round lost"}</p>
       <h2 className="font-display text-2xl mt-2" data-testid="round-result-type">{TEAM_NAME[result.winner_team]} · {VICTORY_LABEL[result.type]}</h2>
       <p className="text-sm text-white/70 mt-2">{REASON_LABEL[result.reason]}</p>
@@ -107,7 +114,7 @@ export function MatchOver({ st, players, mySeat }) {
   const typeCount = (team, type) => st.rounds.filter((r) => r.winner_team === team && r.type === type).length;
   const forfeiter = st.forfeited_by !== null && st.forfeited_by !== undefined ? players.find((p) => p.seat === st.forfeited_by) : null;
   return (
-    <Modal testId="victory-screen">
+    <Modal testId="victory-screen" delay={st.rounds.length ? 1.4 : 0} tone={won ? "win" : "loss"}>
       <div className="text-center">
         {won ? <Trophy className="mx-auto text-amber-300" size={40} /> : <Flag className="mx-auto text-rose-300" size={36} />}
         <p className="eyebrow mt-3 !text-amber-200/80">{won ? "Victory" : "Defeat"}</p>
