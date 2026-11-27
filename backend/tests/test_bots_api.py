@@ -8,19 +8,20 @@ import random
 import sys
 import time
 
-import pytest
-import websockets
+from pathlib import Path
 
-sys.path.insert(0, "/app/backend/tests")
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import live_env  # noqa: E402
+
+BASE_URL = live_env.configure()  # skips unless RUN_LIVE_TESTS=1
+from ws_auth import connect_authenticated  # noqa: E402
 import e2e_match  # noqa: E402
 
-BASE_URL = None
-for line in open("/app/frontend/.env"):
-    if line.startswith("REACT_APP_BACKEND_URL="):
-        BASE_URL = line.split("=", 1)[1].strip().rstrip("/")
 e2e_match.BASE = BASE_URL
 e2e_match.RUN = int(os.environ.get("BOT_RUN", "1659"))
-WS = BASE_URL.replace("http", "ws") + "/api/ws"
+WS = live_env.websocket_url(BASE_URL)
 
 
 @pytest.fixture(scope="module")
@@ -131,7 +132,7 @@ def test_full_practice_match_vs_bots(ps):
 
 
 async def _play(h, gid):
-    ws = await websockets.connect(f"{WS}?token={h.tok}")
+    ws = await connect_authenticated(WS, h.tok)
     await ws.send(json.dumps({"type": "sync_game", "game_id": gid}))
     rnd = random.Random(7)
     res = {"bot_moves": 0, "koth_seen_my_team": False, "koth_waited_for_human": False, "phase": None, "bot_online": True}

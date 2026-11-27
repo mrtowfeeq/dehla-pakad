@@ -1,59 +1,43 @@
-import { useEffect, useState } from "react";
-import { Navigate } from "react-router-dom";
-import { toast } from "sonner";
+import { Navigate, NavLink, useLocation } from "react-router-dom";
+import { Activity, HeartPulse, LayoutDashboard, Users, Shield } from "lucide-react";
 import { useApp } from "@/context/AppContext";
-import { errMsg } from "@/lib/api";
-import { PlayerAvatar } from "@/components/PlayerAvatar";
+import AdminOverview from "@/pages/AdminOverview";
+import AdminLobbies from "@/pages/AdminLobbies";
+import AdminAccess from "@/pages/AdminAccess";
+import AdminSystemHealth from "@/pages/AdminSystemHealth";
+import AdminPlayers from "@/pages/AdminPlayers";
+import AdminPlayerDetail from "@/pages/AdminPlayerDetail";
+
+const STAFF_ROLES = new Set(["admin", "moderator", "support"]);
 
 export default function Admin() {
-  const { api, me } = useApp();
-  const [data, setData] = useState(null);
-  const [stats, setStats] = useState(null);
-  const load = () => {
-    api.get("/users").then((r) => setData(r.data)).catch(() => {});
-    api.get("/admin/stats").then((r) => setStats(r.data)).catch(() => {});
-  };
-  useEffect(() => { if (me.role === "admin") load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  if (me.role !== "admin") return <Navigate to="/home" replace />;
+  const { me } = useApp();
+  const { pathname } = useLocation();
+  if (!STAFF_ROLES.has(me?.role)) return <Navigate to="/home" replace />;
 
-  const setRole = async (uid, role) => {
-    try { await api.patch(`/users/${uid}/role`, { role }); toast.success("Role updated"); load(); } catch (e) { toast.error(errMsg(e)); }
-  };
-
+  const accessPage = pathname.endsWith("/access");
+  const lobbiesPage = pathname.endsWith("/lobbies");
+  const systemHealthPage = pathname.endsWith("/system-health");
+  const playersPage = pathname === "/admin/players";
+  const playerDetailMatch = pathname.match(/^\/admin\/players\/([^/]+)$/);
+  if (systemHealthPage && me.role !== "admin") return <Navigate to="/admin" replace />;
   return (
-    <div className="space-y-10" data-testid="admin-page">
-      <div>
-        <p className="eyebrow">Administration</p>
-        <h1 className="font-display text-4xl mt-2">Admin</h1>
+    <div className="space-y-6" data-testid="admin-page">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div><p className="eyebrow">Secure operations</p><h1 className="mt-2 font-display text-3xl sm:text-4xl">Admin Control Center</h1><p className="mt-2 text-sm text-muted-foreground">Live operations and player account management.</p></div>
+        <span className="rounded-full border border-amber-200/20 bg-amber-200/5 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-100" data-testid="admin-role">{me.role.replaceAll("_", " ")}</span>
+      </header>
+      <div className="grid min-w-0 gap-5 lg:grid-cols-[190px_minmax(0,1fr)] lg:gap-6">
+        <nav className="flex gap-2 overflow-x-auto rounded-2xl border border-border bg-card/50 p-2 lg:sticky lg:top-24 lg:h-fit lg:flex-col" aria-label="Admin sections" data-testid="admin-navigation">
+          <NavLink end to="/admin" className={({ isActive }) => `inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold ${isActive ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}`}><LayoutDashboard size={14} /> Overview</NavLink>
+          <NavLink to="/admin/lobbies" className={({ isActive }) => `inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold ${isActive ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}`}><Activity size={14} /> Live lobbies</NavLink>
+          <NavLink to="/admin/players" className={({ isActive }) => `inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold ${isActive ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}`}><Users size={14} /> Players</NavLink>
+          {me.role === "admin" && <NavLink to="/admin/access" className={({ isActive }) => `inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold ${isActive ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}`}><Shield size={14} /> Access roles</NavLink>}
+          {me.role === "admin" && <NavLink to="/admin/system-health" className={({ isActive }) => `inline-flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold ${isActive ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-secondary/70 hover:text-foreground"}`}><HeartPulse size={14} /> System health</NavLink>}
+          <span className="ml-auto hidden items-center gap-1.5 px-2 py-2 text-[10px] text-muted-foreground lg:inline-flex"><Users size={12} /> Server verified</span>
+        </nav>
+        <section className="min-w-0">{accessPage ? <AdminAccess /> : lobbiesPage ? <AdminLobbies /> : systemHealthPage ? <AdminSystemHealth /> : playerDetailMatch ? <AdminPlayerDetail playerId={decodeURIComponent(playerDetailMatch[1])} /> : playersPage ? <AdminPlayers /> : <AdminOverview />}</section>
       </div>
-      {stats && (
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-4">
-          {Object.entries(stats).map(([k, v]) => (
-            <div key={k}><div className="font-mono text-2xl font-bold" data-testid={`admin-stat-${k}`}>{v}</div><div className="eyebrow mt-1">{k.replace("_", " ")}</div></div>
-          ))}
-        </div>
-      )}
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead><tr className="eyebrow text-left border-b border-border"><th className="py-3">Player</th><th>Email</th><th>Games</th><th>Role</th></tr></thead>
-          <tbody>
-            {data?.users.map((u) => (
-              <tr key={u.user_id} className="border-b border-border" data-testid={`admin-user-row-${u.user_id}`}>
-                <td className="py-3"><div className="flex items-center gap-2"><PlayerAvatar user={u} size={28} online={u.online} />{u.username || <i className="text-muted-foreground">no name</i>}</div></td>
-                <td className="text-muted-foreground">{u.email}</td>
-                <td className="font-mono">{u.stats.games_played}</td>
-                <td>
-                  <select value={u.role} onChange={(e) => setRole(u.user_id, e.target.value)} data-testid={`admin-role-select-${u.user_id}`}
-                    className="rounded-lg bg-background border border-input px-2 py-1">
-                    {data.roles.map((r) => <option key={r} value={r}>{r}</option>)}
-                  </select>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-xs text-muted-foreground">To ban or delete accounts use Manage → Users & Auth in Emergent.</p>
     </div>
   );
 }

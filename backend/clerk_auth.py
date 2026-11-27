@@ -1,6 +1,7 @@
-"""Emergent-managed Clerk auth, inert until CLERK_PUBLISHABLE_KEY/CLERK_SECRET_KEY
-are set: /api/clerk/config for the frontend, the /api/__clerk production relay
-(zero DNS per app), and the require_user dependency for protected routes."""
+"""Clerk authentication with the project's own Clerk keys, inert until CLERK_PUBLISHABLE_KEY and
+CLERK_SECRET_KEY are set: /api/clerk/config for the frontend, the /api/__clerk relay to Clerk's
+Frontend API (so production needs no extra DNS record), and the require_user dependency for protected
+routes. It talks only to Clerk (frontend-api.clerk.dev, api.clerk.com)."""
 
 import os
 from functools import lru_cache
@@ -11,6 +12,10 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from requests.adapters import HTTPAdapter
 from starlette.concurrency import run_in_threadpool
 from urllib3.util.retry import Retry
+try:
+    from backend.request_ip import client_ip, trusted_proxy_header
+except ModuleNotFoundError:
+    from request_ip import client_ip, trusted_proxy_header
 
 CLERK_FRONTEND_API = "https://frontend-api.clerk.dev"
 CLERK_BACKEND_API = "https://api.clerk.com/v1"
@@ -45,10 +50,7 @@ def _is_production() -> bool:
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else ""
+    return client_ip(request)
 
 
 @clerk_router.get("/clerk/config")
@@ -67,7 +69,7 @@ async def clerk_proxy(path: str, request: Request):
     """Relay Clerk's Frontend API through this app's own domain."""
     if not _is_production():
         raise HTTPException(status_code=404)
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+    host = trusted_proxy_header(request, "x-forwarded-host") or request.headers.get("host", "")
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_HEADERS}
     headers["Clerk-Proxy-Url"] = f"https://{host.split(',')[0].strip()}{PROXY_PATH}"
     headers["Clerk-Secret-Key"] = _secret_key()
@@ -103,7 +105,7 @@ def _jwks_client(secret_key: str) -> jwt.PyJWKClient:
     return jwt.PyJWKClient(
         f"{CLERK_BACKEND_API}/jwks",
         # Clerk's edge rejects urllib's default User-Agent (Cloudflare 1010).
-        headers={"Authorization": f"Bearer {secret_key}", "User-Agent": "emergent-clerk-auth"},
+        headers={"Authorization": f"Bearer {secret_key}", "User-Agent": "dehla-pakad-clerk-auth"},
         lifespan=3600,
         timeout=10,
     )
@@ -116,6 +118,32 @@ def verify_session_token(token: str) -> dict:
         return jwt.decode(token, key=key, algorithms=["RS256"], leeway=5)
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+
+
+def _backend_headers() -> dict:
+    # Clerk's edge rejects default library User-Agents (Cloudflare 1010).
+    return {"Authorization": f"Bearer {_secret_key()}", "User-Agent": "dehla-pakad-clerk-auth"}
+
+
+def fetch_clerk_session(session_id: str) -> dict:
+    """Clerk Backend API: the session's owner, status and creation time (ms since epoch)."""
+    response = _http.get(f"{CLERK_BACKEND_API}/sessions/{session_id}", headers=_backend_headers(), timeout=10)
+    if response.status_code in (400, 404):
+        try:
+            from backend.session_guard import SessionInvalid
+        except ModuleNotFoundError:
+            from session_guard import SessionInvalid
+        raise SessionInvalid("unknown session")
+    response.raise_for_status()
+    data = response.json()
+    return {"user_id": data.get("user_id"), "status": data.get("status"), "created_at": data.get("created_at")}
+
+
+def revoke_clerk_session(session_id: str) -> None:
+    """Clerk Backend API: revoke a session so its browser is signed out on the next token refresh."""
+    response = _http.post(f"{CLERK_BACKEND_API}/sessions/{session_id}/revoke", headers=_backend_headers(), timeout=10)
+    if response.status_code not in (200, 400, 404):  # 400/404: already ended or unknown
+        response.raise_for_status()
 
 
 def require_user(request: Request) -> dict:

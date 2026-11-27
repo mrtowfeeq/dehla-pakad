@@ -8,6 +8,16 @@ export function GlobalNotifications() {
   const loc = useLocation();
   const { me, refreshMe } = useApp();
   useSocketEvent((m) => {
+    if (m.type === "account_restricted") {
+      toast.error(m.message || "Your account access has been restricted.");
+      return;
+    }
+    if (m.type === "level_up") {
+      sound.play("success");
+      toast.success(`Level up! You reached level ${m.level}.`, { id: `level-up-${m.level}`, duration: 6000 });
+      refreshMe();
+      return;
+    }
     if (m.type === "match_cancelled") {
       sound.stopAll();
       sound.ambience(false);

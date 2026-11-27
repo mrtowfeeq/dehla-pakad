@@ -4,7 +4,7 @@ import json
 import os
 import sys
 
-import websockets
+from ws_auth import connect_authenticated
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -13,6 +13,7 @@ from e2e_match import P, WS  # noqa: E402
 
 load_dotenv("/app/backend/.env")
 db = AsyncIOMotorClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
+ENV = "live" if os.environ.get("CLERK_PUBLISHABLE_KEY", "").startswith("pk_live_") else "preview"
 
 
 async def collect(p, bucket):
@@ -47,7 +48,7 @@ async def main():
     code, gid = await start_private(ps)
     msgs = {p.name: [] for p in ps}
     for p in ps:
-        p.ws = await websockets.connect(f"{WS}?token={p.tok}")
+        p.ws = await connect_authenticated(WS, p.tok)
         asyncio.create_task(collect(p, msgs[p.name]))
     await asyncio.sleep(1)
 
@@ -55,7 +56,7 @@ async def main():
     await ps[2].ws.close()
     await asyncio.sleep(1.5)
     assert ps[0].api("GET", f"/games/{gid}").json()["status"] == "active", "disconnect must not cancel"
-    ps[2].ws = await websockets.connect(f"{WS}?token={ps[2].tok}")
+    ps[2].ws = await connect_authenticated(WS, ps[2].tok)
     asyncio.create_task(collect(ps[2], msgs[ps[2].name]))
     await asyncio.sleep(1)
     print("disconnect does not cancel: ok")
@@ -102,9 +103,9 @@ async def main():
     await asyncio.sleep(4)
     r = solo.api("POST", f"/games/{gid2}/exit")
     assert r.status_code == 200
-    n1 = await db.game_events.count_documents({"game_id": gid2})
+    n1 = await db.game_events.count_documents({"game_id": gid2, "env": ENV})
     await asyncio.sleep(4)
-    n2 = await db.game_events.count_documents({"game_id": gid2})
+    n2 = await db.game_events.count_documents({"game_id": gid2, "env": ENV})
     assert n1 == n2, "bot acted after cancellation"
     assert solo.api("GET", "/me").json()["active_game_id"] is None
     print("bots stop after exit: ok")

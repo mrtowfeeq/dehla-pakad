@@ -86,6 +86,8 @@ android-sdk/
 .env
 .env.*
 *.env
+# Example files hold placeholders only and are meant to be committed.
+!.env.example
 credentials.json
 *.key
 .credentials

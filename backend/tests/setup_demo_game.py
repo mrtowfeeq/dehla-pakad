@@ -4,7 +4,7 @@ import asyncio
 import json
 import sys
 
-import websockets
+from ws_auth import connect_authenticated
 
 sys.path.insert(0, "/app/backend/tests")
 from e2e_match import P, WS, bapi  # noqa: E402
@@ -25,7 +25,7 @@ async def main():
         g = ps[0].api("GET", f"/games/{game_id}").json()
         sel = g["state"]["trump_selector"]
         selector = next(p for p in ps if p.api("GET", f"/games/{game_id}").json()["state"]["my_seat"] == sel)
-        ws = await websockets.connect(f"{WS}?token={selector.tok}")
+        ws = await connect_authenticated(WS, selector.tok)
         await ws.recv()
         await ws.send(json.dumps({"type": "game_action", "game_id": game_id, "action": "select_trump", "suit": "H"}))
         await asyncio.sleep(1)

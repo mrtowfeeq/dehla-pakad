@@ -1,8 +1,10 @@
 import { Link, NavLink } from "react-router-dom";
 import { UserButton } from "@clerk/react";
-import { Home, Swords, Users, History, Trophy, Settings, Shield } from "lucide-react";
+import { Home, Swords, Users, History, Trophy, Settings, Shield, UserRound } from "lucide-react";
 import { useApp } from "@/context/AppContext";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { CoinBadge } from "@/components/coins/CoinBadge";
+import { LeagueChip } from "@/components/leagues/LeagueChip";
 
 const NAV = [
   { to: "/home", label: "Home", icon: Home, id: "home" },
@@ -14,13 +16,15 @@ const NAV = [
 
 export function AppShell({ children }) {
   const { me, connected } = useApp();
-  const items = [...NAV, { to: "/settings", label: "Settings", icon: Settings, id: "settings" }];
-  if (me?.role === "admin") items.push({ to: "/admin", label: "Admin", icon: Shield, id: "admin" });
+  const profileItem = { to: `/profile/${encodeURIComponent(me?.username || "")}`, label: "Profile", icon: UserRound, id: "profile" };
+  const primaryItems = [...NAV, profileItem];
+  const items = [...primaryItems, { to: "/settings", label: "Settings", icon: Settings, id: "settings" }];
+  if (["admin", "moderator", "support"].includes(me?.role)) items.push({ to: "/admin", label: "Admin", icon: Shield, id: "admin" });
   return (
     <div className="min-h-screen pb-20 md:pb-0">
       <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur-xl">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center gap-6">
-          <Link to="/home" className="font-display text-lg font-bold text-primary" data-testid="nav-logo">Dehla Pakad</Link>
+        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center gap-3 sm:gap-6">
+          <Link to="/home" className="whitespace-nowrap font-display text-base font-bold text-primary sm:text-lg" data-testid="nav-logo">Dehla Pakad</Link>
           <nav className="hidden md:flex items-center gap-1">
             {items.map((n) => (
               <NavLink key={n.to} to={n.to} data-testid={`nav-${n.id}`}
@@ -29,21 +33,23 @@ export function AppShell({ children }) {
               </NavLink>
             ))}
           </nav>
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex items-center gap-2 sm:gap-3">
             <span data-testid="socket-status" title={connected ? "Connected" : "Reconnecting"}
               className={`hidden sm:inline-flex items-center gap-1.5 text-xs ${connected ? "text-emerald-400" : "text-amber-400"}`}>
               <span className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-400" : "bg-amber-400 animate-pulse"}`} />
               {connected ? "Online" : "Connecting"}
             </span>
-            <Link to={`/profile/${me?.username}`} className="hidden sm:block text-sm font-semibold hover:text-primary" data-testid="nav-profile">{me?.username}</Link>
+            <LeagueChip />
+            <CoinBadge />
+            <span className="hidden sm:block max-w-32 truncate text-sm font-semibold text-muted-foreground" title={me?.display_name || me?.username}>{me?.display_name || me?.username}</span>
             <ThemeToggle />
             <UserButton />
           </div>
         </div>
       </header>
       <main className="max-w-6xl mx-auto px-4 py-8 md:py-12">{children}</main>
-      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border bg-background/90 backdrop-blur-xl grid grid-cols-5">
-        {NAV.map((n) => (
+      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border bg-background/90 backdrop-blur-xl grid grid-cols-6">
+        {primaryItems.map((n) => (
           <NavLink key={n.to} to={n.to} data-testid={`mobile-nav-${n.id}`}
             className={({ isActive }) => `flex flex-col items-center gap-0.5 py-2.5 text-[11px] font-semibold ${isActive ? "text-primary" : "text-muted-foreground"}`}>
             <n.icon size={20} />

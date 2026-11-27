@@ -4,11 +4,13 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "next-themes";
 import { Show, SignIn, SignUp } from "@clerk/react";
 import { Toaster } from "@/components/ui/sonner";
-import ClerkAuthProvider from "@/components/auth/ClerkAuthProvider";
+import ClerkAuthProvider, { authAppearance } from "@/components/auth/ClerkAuthProvider";
+import { AuthPage } from "@/components/auth/AuthPage";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { AppShell } from "@/components/AppShell";
 import { Onboarding } from "@/components/Onboarding";
 import { GlobalNotifications } from "@/components/GlobalNotifications";
+import { ProgressionPresenter } from "@/components/leagues/ProgressionPresenter";
 import { SoundBridge } from "@/components/SoundBridge";
 import Landing from "@/pages/Landing";
 import Dashboard from "@/pages/Dashboard";
@@ -21,8 +23,11 @@ import Friends from "@/pages/Friends";
 import History from "@/pages/History";
 import Leaderboard from "@/pages/Leaderboard";
 import Settings from "@/pages/Settings";
+import Wallet from "@/pages/Wallet";
 import Admin from "@/pages/Admin";
 import JoinRoom from "@/pages/JoinRoom";
+import SpectatorGamesList from "@/pages/SpectatorGamesList";
+import SpectatorView from "@/pages/SpectatorView";
 
 function Loading() {
   return (
@@ -46,6 +51,7 @@ function SignedInGate({ children, bare }) {
   return (
     <>
       <GlobalNotifications />
+      <ProgressionPresenter />
       <SoundBridge />
       {bare ? children : <AppShell>{children}</AppShell>}
     </>
@@ -58,22 +64,6 @@ function Protected({ children, bare }) {
       <Show when="signed-in"><SignedInGate bare={bare}>{children}</SignedInGate></Show>
       <Show when="signed-out"><Navigate to="/sign-in" replace /></Show>
     </>
-  );
-}
-
-function AuthPage({ children }) {
-  return (
-    <div className="min-h-screen grid lg:grid-cols-2">
-      <div className="hidden lg:flex felt grain relative flex-col justify-between p-12 overflow-hidden">
-        <div className="font-display text-2xl text-amber-300">Dehla Pakad</div>
-        <div>
-          <p className="eyebrow !text-amber-200/70">Capture the tens</p>
-          <h1 className="font-display text-5xl text-white mt-3 leading-tight">Four players.<br />Two teams.<br />Four tens to claim.</h1>
-        </div>
-        <p className="text-slate-300/70 text-sm">Registration is required to play.</p>
-      </div>
-      <div className="flex items-center justify-center p-4 py-10">{children}</div>
-    </div>
   );
 }
 
@@ -103,20 +93,24 @@ function App() {
             <AppProvider>
               <Routes>
                 <Route path="/" element={<Home />} />
-                <Route path="/sign-in/*" element={<AuthPage><SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" withSignUp /></AuthPage>} />
-                <Route path="/sign-up/*" element={<AuthPage><SignUp routing="path" path="/sign-up" signInUrl="/sign-in" /></AuthPage>} />
+                <Route path="/sign-in/*" element={<AuthPage alt={{ text: "New here?", label: "Create a free account", to: "/sign-up" }}><SignIn routing="path" path="/sign-in" signUpUrl="/sign-up" withSignUp appearance={authAppearance} /></AuthPage>} />
+                <Route path="/sign-up/*" element={<AuthPage><SignUp routing="path" path="/sign-up" signInUrl="/sign-in" appearance={authAppearance} /></AuthPage>} />
                 <Route path="/home" element={<Protected><Dashboard /></Protected>} />
                 <Route path="/play" element={<Protected><Matchmaking /></Protected>} />
                 <Route path="/rooms/new" element={<Protected><CreateRoom /></Protected>} />
                 <Route path="/join/:code" element={<Protected><JoinRoom /></Protected>} />
                 <Route path="/room/:code" element={<Protected><Lobby /></Protected>} />
                 <Route path="/game/:gameId" element={<Protected bare><GameTable /></Protected>} />
+                <Route path="/spectate" element={<Protected><SpectatorGamesList /></Protected>} />
+                <Route path="/spectate/:gameId" element={<Protected bare><SpectatorView /></Protected>} />
+                <Route path="/admin/spectate/:gameId" element={<Protected bare><SpectatorView adminSpectator /></Protected>} />
                 <Route path="/profile/:username" element={<Protected><Profile /></Protected>} />
                 <Route path="/friends" element={<Protected><Friends /></Protected>} />
                 <Route path="/history" element={<Protected><History /></Protected>} />
                 <Route path="/leaderboard" element={<Protected><Leaderboard /></Protected>} />
                 <Route path="/settings" element={<Protected><Settings /></Protected>} />
-                <Route path="/admin" element={<Protected><Admin /></Protected>} />
+                <Route path="/wallet" element={<Protected><Wallet /></Protected>} />
+                <Route path="/admin/*" element={<Protected><Admin /></Protected>} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </AppProvider>

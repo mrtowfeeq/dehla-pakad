@@ -4,7 +4,7 @@
 Build a complete production-quality online multiplayer Dehla Pakad card game (4 players, 2 teams opposite, trump selection after 5 cards, 5+4+4 staged dealing, follow-suit, tens / Normal Win / Koth / automatic Koth, Grand Slam (13 Mann) after first 7 tricks, equal tens 7–6 rule, exact dealer rotation table, targets 5/7/10/15/21/custom), with registration (no guests), private rooms, invite codes, public matchmaking, real-time play, chat & emojis, friends & invitations, history, stats, leaderboards, reconnection, presence, light/dark themes, PWA, server-authoritative security, automated tests.
 
 ## User choices
-- Email + password login (Emergent-managed Clerk); admin email: setowfeeq@gmail.com
+- Email + password login (Clerk, with our own Clerk keys); admin email: setowfeeq@gmail.com
 - Disconnected player: game waits for them (cards stay hidden)
 - Play direction: counter-clockwise (seat+1 = player to the right)
 

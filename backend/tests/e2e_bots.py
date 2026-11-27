@@ -4,7 +4,7 @@ import json
 import random
 import sys
 
-import websockets
+from ws_auth import connect_authenticated
 
 sys.path.insert(0, "/app/backend/tests")
 from e2e_match import P, WS  # noqa: E402
@@ -23,7 +23,7 @@ async def main():
     assert sum(1 for s in room["seats"] if s.get("is_bot")) == 3
     h.api("POST", f"/rooms/{code}/ready", json={"ready": True}).raise_for_status()
     gid = h.api("POST", f"/rooms/{code}/start").json()["game_id"]
-    ws = await websockets.connect(f"{WS}?token={h.tok}")
+    ws = await connect_authenticated(WS, h.tok)
     await ws.send(json.dumps({"type": "sync_game", "game_id": gid}))
     rnd = random.Random(3)
     while True:

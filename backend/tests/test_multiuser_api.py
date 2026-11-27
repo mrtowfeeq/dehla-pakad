@@ -1,24 +1,25 @@
 """Multi-user REST + WS regression tests against the PUBLIC URL (rooms, matchmaking, friends, invites, chat, security).
-Run: cd /app/backend && pytest tests/test_multiuser_api.py -n 0 -v"""
+Run from backend/: RUN_LIVE_TESTS=1 pytest tests/test_multiuser_api.py -n 0 -v   Settings: see live_env.py."""
 import asyncio
 import json
 import os
 import sys
+from pathlib import Path
 
 import pytest
 import requests
 import websockets
 
-sys.path.insert(0, "/app/backend/tests")
-from dotenv import dotenv_values  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import live_env  # noqa: E402
 
-PUBLIC = dotenv_values("/app/frontend/.env")["REACT_APP_BACKEND_URL"].rstrip("/")
-os.environ["E2E_BASE"] = PUBLIC
+PUBLIC = live_env.configure()  # skips unless RUN_LIVE_TESTS=1
+from ws_auth import authenticate_socket  # noqa: E402
 import e2e_match  # noqa: E402
 from e2e_match import P  # noqa: E402
 
 BASE = PUBLIC + "/api"
-WS = PUBLIC.replace("https", "wss") + "/api/ws"
+WS = live_env.websocket_url(PUBLIC)
 ST = {}
 
 
@@ -35,7 +36,8 @@ def players(rng):
 
 async def ws_collect(p, sends, wait=1.5, game_id=None):
     msgs = []
-    async with websockets.connect(f"{WS}?token={p.tok}") as ws:
+    async with websockets.connect(WS) as ws:
+        await authenticate_socket(ws, p.tok)
         for s in sends:
             await ws.send(json.dumps(s))
         end = asyncio.get_event_loop().time() + wait
@@ -60,7 +62,8 @@ class TestSecurity:
     def test_ws_invalid_token(self):
         async def go():
             try:
-                async with websockets.connect(f"{WS}?token=bad") as ws:
+                async with websockets.connect(WS) as ws:
+                    await authenticate_socket(ws, "bad")
                     await asyncio.wait_for(ws.recv(), 5)
                 return "open"
             except Exception as e:
@@ -194,9 +197,11 @@ class TestPrivateFlow:
         bs, code = ST["by_seat"], ST["code"]
 
         async def go():
-            async with websockets.connect(f"{WS}?token={bs[1].tok}") as w1:
+            async with websockets.connect(WS) as w1:
+                await authenticate_socket(w1, bs[1].tok)
                 await w1.recv()
-                async with websockets.connect(f"{WS}?token={bs[0].tok}") as w0:
+                async with websockets.connect(WS) as w0:
+                    await authenticate_socket(w0, bs[0].tok)
                     await w0.send(json.dumps({"type": "chat", "room_code": code, "text": "TEST_hello"}))
                     await w0.send(json.dumps({"type": "reaction", "room_code": code, "emoji": "🔥"}))
                     await w0.send(json.dumps({"type": "reaction", "room_code": code, "emoji": "XX"}))

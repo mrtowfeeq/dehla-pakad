@@ -4,7 +4,7 @@ import json
 import random
 import sys
 
-import websockets
+from ws_auth import connect_authenticated
 
 sys.path.insert(0, "/app/backend/tests")
 import e2e_match as e  # noqa: E402
@@ -17,7 +17,7 @@ BASE = "wss://" + __import__("os").environ["PUB"].split("://")[1] + "/api/ws"
 
 async def main():
     p = e.P(1)
-    ws = await websockets.connect(f"{BASE}?token={p.tok}")
+    ws = await connect_authenticated(BASE, p.tok)
     await ws.send(json.dumps({"type": "sync_game", "game_id": GID}))
     rnd = random.Random(5)
     while True:

@@ -1,5 +1,6 @@
 """End-to-end: four real Clerk test users play a complete private match over the live API + WebSockets.
-Run: cd /app/backend && python tests/e2e_match.py   (needs CLERK_SECRET_KEY in backend/.env and backend running)"""
+Run from backend/: python tests/e2e_match.py   (needs CLERK_SECRET_KEY in backend/.env and backend running;
+E2E_BASE and BACKEND_ENV_FILE override the defaults, see live_env.py)"""
 import asyncio
 import json
 import os
@@ -9,10 +10,11 @@ import urllib.parse
 import urllib.request
 
 import requests
-import websockets
+from ws_auth import connect_authenticated
 from dotenv import load_dotenv
+from live_env import backend_env_file
 
-load_dotenv("/app/backend/.env")
+load_dotenv(backend_env_file(), override=False)
 SK = os.environ["CLERK_SECRET_KEY"]
 BASE = os.environ.get("E2E_BASE", "http://localhost:8001")
 RUN = random.randint(1000, 9999)
@@ -21,7 +23,7 @@ WS = BASE.replace("http", "ws") + "/api/ws"
 
 def bapi(path, body=None, method="POST"):
     req = urllib.request.Request("https://api.clerk.com/v1" + path, data=json.dumps(body).encode() if body is not None else None, method=method,
-                                 headers={"Authorization": "Bearer " + SK, "Content-Type": "application/json", "User-Agent": "emergent-test"})
+                                 headers={"Authorization": "Bearer " + SK, "Content-Type": "application/json", "User-Agent": "dehla-pakad-test"})
     return json.load(urllib.request.urlopen(req))
 
 
@@ -76,7 +78,7 @@ async def main():
     host.api("PATCH", f"/rooms/{code}/settings", json={"dealer_seat": 2}).raise_for_status()
     q = asyncio.Queue()
     for p in ps:
-        p.ws = await websockets.connect(f"{WS}?token={p.tok}")
+        p.ws = await connect_authenticated(WS, p.tok)
         asyncio.create_task(reader(p, q))
     for p in ps:
         p.api("POST", f"/rooms/{code}/ready", json={"ready": True}).raise_for_status()
@@ -148,7 +150,7 @@ async def main():
             await victim.ws.close()
             await asyncio.sleep(1)
             assert by_seat[0].state["players"][1]["online"] is False
-            victim.ws = await websockets.connect(f"{WS}?token={victim.tok}")
+            victim.ws = await connect_authenticated(WS, victim.tok)
             asyncio.create_task(reader(victim, q))
             await victim.ws.send(json.dumps({"type": "sync_game", "game_id": game_id}))
             await asyncio.sleep(1)

@@ -83,11 +83,48 @@ body {
             repeating-linear-gradient(115deg, rgba(255,255,255,.012) 0 2px, transparent 2px 5px),
             radial-gradient(ellipse at center, var(--felt-inner) 0%, var(--felt) 55%, var(--felt-edge) 100%);
     }
+    /* Game room: a pool of warm light over the table, falling off into a dark vignette. */
+    .game-shell {
+        background:
+            radial-gradient(ellipse 60% 38% at 50% 0%, rgba(251,191,36,.09), transparent 70%),
+            radial-gradient(ellipse 105% 82% at 50% 42%, #123b2b 0%, #0a1b13 54%, #020604 100%);
+    }
+    /* Polished wood rail with a thin gold inlay where it meets the felt, plus a faint playing-area ring. */
     .table-rail {
         border: 10px solid transparent;
         background: radial-gradient(ellipse at center, var(--felt-inner) 0%, var(--felt) 70%, var(--felt-edge) 120%) padding-box,
-            linear-gradient(145deg, #6b3f1d, #3b200c 40%, #8a5a2b 60%, #2e1808) border-box;
-        box-shadow: inset 0 0 90px rgba(0,0,0,.45), 0 18px 40px -10px rgba(0,0,0,.6);
+            linear-gradient(145deg, #7a4a22, #3b200c 38%, #9a6a35 58%, #2e1808 82%, #5a3416) border-box;
+        box-shadow: inset 0 0 0 2px rgba(251,191,36,.28), inset 0 0 90px rgba(0,0,0,.45),
+            0 0 0 1px rgba(251,191,36,.22), 0 18px 40px -10px rgba(0,0,0,.6);
+    }
+    .seat-panel {
+        background: linear-gradient(145deg, rgba(16,33,26,.95), rgba(4,13,9,.92));
+        box-shadow: inset 0 1px 0 rgba(251,191,36,.16), 0 12px 28px -18px rgba(0,0,0,.95);
+    }
+    .seat-panel-active {
+        background: linear-gradient(145deg, rgba(92,66,20,.97), rgba(22,24,12,.97));
+        box-shadow: inset 0 1px 0 rgba(254,243,199,.35), 0 0 26px -4px rgba(251,191,36,.6);
+    }
+    /* Round gold-trimmed buttons in the game header (menu, voice, chat). */
+    .game-hud-btn {
+        border: 1px solid rgba(251,191,36,.4);
+        background: linear-gradient(145deg, #1b2a4a, #0a1120);
+        color: #fde68a;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 6px 14px -8px rgba(0,0,0,.9);
+    }
+    .game-hud-btn:hover { border-color: rgba(251,191,36,.75); }
+    .seat-online-badge {
+        box-shadow: 0 0 0 2px rgba(52,211,153,.14), 0 0 10px rgba(52,211,153,.48);
+    }
+    .playing-card-face {
+        overflow: hidden;
+        border: 1px solid #d6d3d1;
+        background: linear-gradient(145deg, #fff 0%, #fafaf9 68%, #f1f0ed 100%);
+        box-shadow: 0 10px 20px -8px rgba(0,0,0,.72), inset 0 1px 0 rgba(255,255,255,.95);
+        transition: box-shadow 160ms ease, filter 160ms ease;
+    }
+    .game-hand-dock {
+        background: linear-gradient(180deg, transparent 0%, rgba(3,9,6,.52) 22%, rgba(2,6,4,.88) 100%);
     }
     .grain::after {
         content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0.07; mix-blend-mode: overlay;
@@ -112,6 +149,82 @@ body {
 @keyframes shine { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 @keyframes shake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-5px); } 75% { transform: translateX(5px); } }
 .shake { animation: shake .3s ease-in-out 1; }
+.trick-card-size, .trick-card-slot, .trick-center-cell { width: 54px; height: 76px; }
+.trick-card-size {
+    container-type: inline-size;
+    padding: 3px;
+}
+.trick-card-index { font-size: 24cqw; line-height: 1; }
+.trick-card-symbol { font-size: 42cqw; line-height: 1; }
+@media (max-width: 359px) {
+    .trick-card-size, .trick-card-slot, .trick-center-cell { width: 48px; height: 68px; }
+}
+@media (max-width: 319px) {
+    .trick-card-size, .trick-card-slot, .trick-center-cell { width: 38px; height: 54px; }
+}
+@media (min-width: 640px) {
+    .trick-card-size, .trick-card-slot, .trick-center-cell { width: 64px; height: 90px; }
+}
+@media (min-width: 1024px) {
+    .trick-card-size, .trick-card-slot, .trick-center-cell { width: 78px; height: 110px; }
+}
+@media (max-height: 960px) and (min-width: 640px) {
+    .trick-card-size, .trick-card-slot, .trick-center-cell { width: 48px; height: 68px; }
+}
+@media (max-height: 800px) and (min-width: 640px) {
+    .trick-card-size, .trick-card-slot, .trick-center-cell { width: 40px; height: 56px; }
+}
+@media (max-height: 740px) and (min-width: 320px) and (max-width: 639px) {
+    .trick-card-size, .trick-card-slot, .trick-center-cell { width: 40px; height: 56px; }
+}
+@media (min-width: 1280px) {
+    .game-table-grid {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 6fr) minmax(0, 1fr);
+        grid-template-rows: auto minmax(312px, 1fr) auto;
+    }
+    .game-table-board {
+        width: auto;
+        height: min(100%, 35vh);
+        min-width: 0;
+        max-width: 100%;
+        flex: 0 1 auto;
+        aspect-ratio: 2.1 / 1;
+    }
+    .trick-card-size, .trick-card-slot, .trick-center-cell {
+        width: 68px;
+        height: 96px;
+    }
+}
+@media (max-height: 960px) and (min-width: 1280px) {
+    .game-table-grid { grid-template-rows: auto minmax(252px, 1fr) auto; }
+    .trick-card-size, .trick-card-slot, .trick-center-cell { width: 54px; height: 76px; }
+    .trick-center-symbol { font-size: 2.25rem; }
+}
+@media (max-height: 800px) and (min-width: 1280px) {
+    .game-table-grid { grid-template-rows: auto minmax(210px, 1fr) auto; }
+    .trick-card-size, .trick-card-slot, .trick-center-cell { width: 44px; height: 62px; }
+    .trick-center-symbol { font-size: 1.75rem; }
+}
+/* Landscape phones: the trick area is three cards tall, so it needs smaller cards to fit beside the hand. */
+@media (max-height: 500px) and (max-width: 1023px) {
+    .trick-card-size, .trick-card-slot, .trick-center-cell { width: 34px; height: 48px; }
+    .trick-center-symbol { font-size: 1.5rem; }
+}
+/* Every layout: the trick area is three cards tall and three wide, so cap each card to a third of the
+   felt's actual size minus the wooden rail (10px, 6px on phones) and a small margin, keeping the 1.4
+   aspect. The sizes above still apply whenever they already fit; this only shrinks cards that would
+   otherwise run over the rail or spill onto the seats. */
+.game-table-board { container-type: size; --rail-clear: 14px; }
+@media (max-width: 639px) { .game-table-board { --rail-clear: 10px; } }
+.game-table-board :is(.trick-card-size, .trick-card-slot, .trick-center-cell) {
+    max-height: min(calc((100cqh - 2 * var(--rail-clear)) / 3), calc((100cqw - 2 * var(--rail-clear) - 32px) / 3 * 1.4));
+    max-width: min(calc((100cqh - 2 * var(--rail-clear)) / 3 / 1.4), calc((100cqw - 2 * var(--rail-clear) - 32px) / 3));
+}
 @media (prefers-reduced-motion: reduce) {
     .rise, .turn-pulse, .thinking-dot, .announce-shine, .shake { animation: none !important; }
+    .seat-panel, .playing-card-face, .game-hand-dock { transition-duration: 0.01ms !important; }
+}
+
+@media (max-width: 639px) {
+    .table-rail { border-width: 6px; box-shadow: inset 0 0 0 1.5px rgba(251,191,36,.26), inset 0 0 44px rgba(0,0,0,.38), 0 0 0 1px rgba(251,191,36,.18), 0 10px 24px -12px rgba(0,0,0,.7); }
 }

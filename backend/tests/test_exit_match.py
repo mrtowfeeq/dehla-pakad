@@ -1,19 +1,24 @@
 """Exit Match (iteration 4): each seat can cancel, idempotency, post-cancel actions, offline on disconnect.
-Run: cd /app/backend && E2E_BASE=<public url> pytest tests/test_exit_match.py -n 0 -v -s
-Reuses existing Clerk users (dev quota full): EXIT_RUN (default 1659)."""
+Run from backend/: RUN_LIVE_TESTS=1 E2E_BASE=<backend url> pytest tests/test_exit_match.py -n 0 -v -s
+Reuses existing Clerk users (dev quota full): EXIT_RUN (default 1659). Settings: see live_env.py."""
 import asyncio
 import json
 import os
 import sys
+from pathlib import Path
 
 import pytest
-import websockets
 
-sys.path.insert(0, "/app/backend/tests")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import live_env  # noqa: E402
+
+BASE_URL = live_env.configure()  # skips unless RUN_LIVE_TESTS=1
+from ws_auth import connect_authenticated  # noqa: E402
 import e2e_match  # noqa: E402
 
+e2e_match.BASE = BASE_URL
 e2e_match.RUN = int(os.environ.get("EXIT_RUN", "1659"))
-WS = e2e_match.WS
+WS = live_env.websocket_url(BASE_URL)
 MSG = "The match has ended because a player exited."
 
 
@@ -63,7 +68,7 @@ def test_each_seat_can_exit(ps, exit_seat):
         msgs, socks = {}, []
         for p in ps:
             msgs[p.name] = []
-            ws = await websockets.connect(f"{WS}?token={p.tok}")
+            ws = await connect_authenticated(WS, p.tok)
             socks.append(ws)
             asyncio.create_task(collect(ws, msgs[p.name]))
         await asyncio.sleep(1)
@@ -88,7 +93,7 @@ def test_exit_mid_play_and_actions_rejected(ps):
         by_seat = {p.api("GET", f"/games/{gid}").json()["state"]["my_seat"]: p for p in ps}
         st = by_seat[0].api("GET", f"/games/{gid}").json()["state"]
         sel = by_seat[st["trump_selector"]]
-        ws = await websockets.connect(f"{WS}?token={sel.tok}")
+        ws = await connect_authenticated(WS, sel.tok)
         bucket = []
         asyncio.create_task(collect(ws, bucket))
         await ws.send(json.dumps({"type": "game_action", "game_id": gid, "action": "select_trump", "suit": "H"}))
@@ -100,7 +105,7 @@ def test_exit_mid_play_and_actions_rejected(ps):
         g = by_seat[0].api("GET", f"/games/{gid}").json()
         assert g["status"] == "cancelled" and g["state"]["scores"] == scores
         turn_p = by_seat[st["turn"]]
-        ws2 = await websockets.connect(f"{WS}?token={turn_p.tok}")
+        ws2 = await connect_authenticated(WS, turn_p.tok)
         b2 = []
         asyncio.create_task(collect(ws2, b2))
         await asyncio.sleep(0.5)
@@ -133,7 +138,7 @@ def test_disconnect_shows_offline_not_cancel(ps):
         socks = {}
         states = {p.name: [] for p in ps}
         for p in ps:
-            socks[p.name] = await websockets.connect(f"{WS}?token={p.tok}")
+            socks[p.name] = await connect_authenticated(WS, p.tok)
             asyncio.create_task(collect(socks[p.name], states[p.name]))
         await asyncio.sleep(1)
         victim = ps[3]
@@ -143,7 +148,7 @@ def test_disconnect_shows_offline_not_cancel(ps):
         assert g["status"] == "active"
         vp = [pl for pl in g["players"] if pl["user_id"] == victim.uid][0]
         assert vp["online"] is False
-        socks[victim.name] = await websockets.connect(f"{WS}?token={victim.tok}")
+        socks[victim.name] = await connect_authenticated(WS, victim.tok)
         await asyncio.sleep(1)
         g = ps[0].api("GET", f"/games/{gid}").json()
         assert [pl for pl in g["players"] if pl["user_id"] == victim.uid][0]["online"] is True

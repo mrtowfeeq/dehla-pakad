@@ -1,24 +1,25 @@
 """Iteration 2 regression: public lobby dissolve/requeue, ready timeout, WS-disconnect dequeue, duplicate invite 409.
-Run: cd /app/backend && pytest tests/test_matchmaking_fixes.py -n 0 -v -s   (takes ~90s because of the 60s ready timeout)"""
+Run from backend/: RUN_LIVE_TESTS=1 pytest tests/test_matchmaking_fixes.py -n 0 -v -s
+(takes ~90s because of the 60s ready timeout). Settings: see live_env.py."""
 import asyncio
 import json
 import os
 import random
 import sys
+from pathlib import Path
 
 import pytest
-import websockets
 
-sys.path.insert(0, "/app/backend/tests")
-from dotenv import dotenv_values  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import live_env  # noqa: E402
 
-PUBLIC = dotenv_values("/app/frontend/.env")["REACT_APP_BACKEND_URL"].rstrip("/")
-os.environ["E2E_BASE"] = PUBLIC
+PUBLIC = live_env.configure()  # skips unless RUN_LIVE_TESTS=1
+from ws_auth import connect_authenticated  # noqa: E402
 import e2e_match  # noqa: E402
 
 e2e_match.BASE = PUBLIC
 e2e_match.RUN = random.randint(10000, 99999)
-WS = PUBLIC.replace("https", "wss") + "/api/ws"
+WS = live_env.websocket_url(PUBLIC)
 ST = {}
 
 
@@ -42,7 +43,7 @@ async def open_ws(ps):
     socks = []
     for p in ps:
         p.msgs = []
-        ws = await websockets.connect(f"{WS}?token={p.tok}")
+        ws = await connect_authenticated(WS, p.tok)
         socks.append(ws)
 
         async def rd(p=p, ws=ws):
@@ -186,8 +187,8 @@ def test_ws_disconnect_dequeues(ps):
     async def go():
         p = ps[4]
         await cleanup([p])
-        ws1 = await websockets.connect(f"{WS}?token={p.tok}")
-        ws2 = await websockets.connect(f"{WS}?token={p.tok}")
+        ws1 = await connect_authenticated(WS, p.tok)
+        ws2 = await connect_authenticated(WS, p.tok)
         await asyncio.sleep(1)
         assert (await call(p, "POST", "/matchmaking/join")).json()["queued"] is True
         await ws1.close()

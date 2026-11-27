@@ -106,7 +106,8 @@ class Match:
         s["round_no"] += 1
         s.update(deck=deck, hands=[[], [], [], []], deal_stage=0, trump=None, trick=[], tricks=[],
                  last_trick=None, tens=[[], []], tricks_won=[0, 0], koth=None, koth_decision=None,
-                 gs_eligible=None, gs_pending=False, gs_decided=False, gs_declared=None, result=None,
+                 gs_eligible=None, gs_pending=False, gs_decided=False, gs_declared=None, auto_koth_pending=None,
+                 result=None,
                  turn=None, phase="trump_select", trump_selector=right_of(s["dealer"]), events=[])
         self._deal()
 
@@ -186,9 +187,14 @@ class Match:
         s["gs_decided"] = True
         s["phase"] = "playing"
         self._event("grand_slam_decision", seat=seat, declare=bool(declare))
+        auto_koth = s.get("auto_koth_pending")
+        s["auto_koth_pending"] = None
         if declare:
             s["gs_declared"] = s["gs_eligible"]
             s["koth"] = None  # Grand Slam replaces any active Koth
+        elif auto_koth is not None:
+            # Declining after a trick-7 sweep that took the 3rd and 4th tens settles the automatic Koth.
+            return self._finish(auto_koth, KOTH, "automatic_koth")
 
     def forfeit(self, seat):
         s = self.s
@@ -241,6 +247,10 @@ class Match:
             if tens_in and len(s["tens"][0]) + len(s["tens"][1]) == 4:
                 return self._finish(wt, KOTH, "koth_fourth_ten")
         elif before < 3 and after == 4:
+            if n == 7 and self._first_seven_team() == wt and not s["gs_decided"]:
+                # Approved rule: a clean seven-trick sweep is offered Grand Slam before automatic Koth.
+                s["auto_koth_pending"] = wt
+                return self._offer_grand_slam()
             return self._finish(wt, KOTH, "automatic_koth")
         elif before < 3 and after == 3:
             if len(s["tens"][opp]) == 1:
@@ -250,10 +260,19 @@ class Match:
             s["gs_pending"] = n == 7 and self._first_seven_team() is not None
             return
 
+        if s["koth"] is None:
+            # Approved rules: a team with at least two tens and seven tricks wins normally as soon as the
+            # opponents hold at least one ten. A 2-2 split keeps its "equal_tens" reason. When the
+            # opponents have no tens, play continues so Koth stays possible.
+            counts = [len(s["tens"][0]), len(s["tens"][1])]
+            for team in (0, 1):
+                if counts[team] >= 2 and counts[1 - team] >= 1 and s["tricks_won"][team] >= 7:
+                    reason = "equal_tens" if counts == [2, 2] else "two_tens_seven_tricks"
+                    return self._finish(team, NORMAL, reason)
         if n == 7 and self._first_seven_team() is not None:
             return self._offer_grand_slam()
         if n == 13:
-            # Only reachable with two tens each: 7-6 trick split decides.
+            # Safety net; a 2-2 split is settled above once either team reaches seven tricks.
             return self._finish(0 if s["tricks_won"][0] >= 7 else 1, NORMAL, "equal_tens")
 
     def _first_seven_team(self):
@@ -278,8 +297,11 @@ class Match:
         nd = next_dealer(s["dealer"], team, vtype)
         s["result"] = {"winner_team": team, "type": vtype, "points": pts, "reason": reason,
                        "dealer": s["dealer"], "next_dealer": nd, "tricks_won": list(s["tricks_won"]),
-                       "tens": [len(s["tens"][0]), len(s["tens"][1])]}
-        s["rounds"].append({"round": s["round_no"], **s["result"]})
+                       "tens": [len(s["tens"][0]), len(s["tens"][1])],
+                       # Display-only snapshot of which ten cards each team captured (uncaptured tens stay in hands).
+                       "captured_tens": [list(s["tens"][0]), list(s["tens"][1])]}
+        s["rounds"].append({"round": s["round_no"], **s["result"],
+                            "captured_tens": [list(s["tens"][0]), list(s["tens"][1])]})
         s["turn"] = None
         s["koth_decision"] = None
         self._event("round_over", **s["result"])
@@ -304,7 +326,8 @@ class Match:
             "hand": sort_hand(hand),
             "legal": sort_hand(legal_cards(hand, s["trick"])) if s["phase"] == "playing" and s["turn"] == seat else [],
             "koth": s["koth"], "koth_decision": s["koth_decision"], "gs_eligible": s["gs_eligible"],
-            "gs_declared": s["gs_declared"], "result": s["result"], "rounds": s["rounds"],
+            "gs_declared": s["gs_declared"], "auto_koth_pending": s.get("auto_koth_pending"),
+            "result": s["result"], "rounds": s["rounds"],
             "winner_team": s["winner_team"], "my_seat": seat, "forfeited_by": s.get("forfeited_by"), "cancelled_by": s.get("cancelled_by"),
             "partner_hand": sort_hand(s["hands"][partner(seat)]) if show_partner else None,
             "seq": s["seq"],
