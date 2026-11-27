@@ -39,8 +39,12 @@ MongoDB Atlas for data. It does not depend on any Emergent service, SDK, preview
 
 ## Tests
 
-- Backend: `cd backend` then `venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider`
-  (unit tests use in-memory fakes; they never need a live database).
+- Backend (canonical): `cd backend` then `venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider`
+  (unit tests use in-memory fakes; they never need a live database). Running it from the repository root
+  (`backend\venv\Scripts\python.exe -m pytest backend/tests ...`) gives the same result:
+  `backend/tests/conftest.py` makes every run import the backend modules the way production does (flat
+  names from `backend/`), so no module is ever loaded twice under two names. The live suites run only with
+  `RUN_LIVE_TESTS=1` and are skipped otherwise.
 - Frontend: `cd frontend` then `set CI=true && yarn test --watchAll=false`
 - Production build: `cd frontend` then `yarn build` (output in `frontend/build`).
 

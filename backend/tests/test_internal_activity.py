@@ -178,3 +178,53 @@ def test_players_being_matched_still_count_as_queued(undrained, monkeypatch):
     assert asyncio.run(run()) == "ROOM02"
     assert seen["queued"] == 4  # taken off the queue, room not stored yet: still counted
     assert server.mm_forming == 0
+
+
+def test_a_dissolving_public_lobby_is_counted_until_its_players_are_queued_again(undrained, monkeypatch):
+    """The lobby leaves the database before its players are back in the queue: they must stay counted."""
+    seen = []
+
+    async def activity():
+        return (await server.internal_activity(request("127.0.0.1")))["queued_players"]
+
+    class Rooms:
+        async def delete_one(self, query):
+            seen.append(("during delete", await activity()))
+            return type("Res", (), {"deleted_count": 1})()
+
+    async def close_room(code, reason):  # the await between the delete and the requeue
+        seen.append(("lobby gone, not queued yet", await activity()))
+
+    async def send_many(*a, **k):
+        pass
+
+    monkeypatch.setattr(server, "db", type("DB", (), {"rooms": Rooms()})())
+    monkeypatch.setattr(server.voice_service, "close_room", close_room)
+    monkeypatch.setattr(server.hub, "online", lambda uid: True)
+    monkeypatch.setattr(server.hub, "send_many", send_many)
+    room = {"code": "PUB001", "seats": ["a", "b", "c", "d"], "status": "lobby", "is_public": True}
+    asyncio.run(server._dissolve_public(room, {"d"}))
+    assert seen == [("during delete", 3), ("lobby gone, not queued yet", 3)]
+    assert server.mm_queue == ["a", "b", "c"] and server.mm_forming == 0
+
+
+def test_a_lobby_already_gone_releases_its_transit_count(undrained, monkeypatch):
+    class Rooms:
+        async def delete_one(self, query):
+            return type("Res", (), {"deleted_count": 0})()
+
+    monkeypatch.setattr(server, "db", type("DB", (), {"rooms": Rooms()})())
+    asyncio.run(server._dissolve_public({"code": "PUB002", "seats": ["a", "b", "c", "d"]}, set()))
+    assert server.mm_forming == 0 and server.mm_queue == []
+
+
+def test_no_public_lobby_is_formed_while_draining(undrained, monkeypatch):
+    async def new_code():
+        pytest.fail("no public lobby may be created while draining")
+
+    monkeypatch.setattr(server, "new_code", new_code)
+    monkeypatch.setattr(server, "mm_queue", ["a", "b", "c", "d"])
+    start_drain_now()
+    assert asyncio.run(server._try_match("a", "free")) is None
+    assert server.mm_queue == ["a", "b", "c", "d"] and server.mm_forming == 0  # still queued, still counted
+    assert asyncio.run(server.internal_activity(request("127.0.0.1")))["queued_players"] == 4

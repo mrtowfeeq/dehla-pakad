@@ -1137,16 +1137,24 @@ async def leave_all_lobbies(uid):
 
 async def _dissolve_public(room, removed):
     """A public lobby never runs short-handed: remaining players go back to the front of the queue."""
-    res = await db.rooms.delete_one(scoped_query({"code": room["code"], "status": "lobby"}, ENV))
-    if res.deleted_count == 0:
-        return
-    await voice_service.close_room(room["code"], "The room was closed")
-    keep = [s for s in room["seats"] if s and s not in removed and hub.online(s)]
-    tier = room.get("stake_tier") or "free"
-    queue = _queue_for(tier)
-    for u in reversed(keep):
-        if _queued_tier(u) is None:
-            queue.insert(0, u)
+    global mm_forming
+    # From before the lobby leaves the database until its players are back in a queue they are in neither
+    # place: count them as in transit (mm_forming), so the deploy activity check can never miss them.
+    transit = len([s for s in room["seats"] if s and s not in removed])
+    mm_forming += transit
+    try:
+        res = await db.rooms.delete_one(scoped_query({"code": room["code"], "status": "lobby"}, ENV))
+        if res.deleted_count == 0:
+            return
+        await voice_service.close_room(room["code"], "The room was closed")
+        keep = [s for s in room["seats"] if s and s not in removed and hub.online(s)]
+        tier = room.get("stake_tier") or "free"
+        queue = _queue_for(tier)
+        for u in reversed(keep):
+            if _queued_tier(u) is None:
+                queue.insert(0, u)
+    finally:
+        mm_forming -= transit  # no await since the queue insert: the players are always counted
     await hub.send_many(keep, {"type": "requeued", "code": room["code"]})
     await hub.send_many(list(removed), {"type": "room_left", "code": room["code"]})
     await _try_match(tier=tier)
@@ -1506,8 +1514,9 @@ async def private_lobby_chat(code: str, member: dict = Depends(player)):
 mm_queue: list[str] = []
 mm_stake_queues: dict[str, list[str]] = {tier: [] for tier in STAKE_TIERS}
 mm_lock = asyncio.Lock()
-# Players taken off a queue whose public room is not in the database yet (counted as queued by
-# /internal/activity, so a deploy never sees them as "nothing in progress").
+# Players in transit between a matchmaking queue and a public lobby, in either direction: taken off a queue
+# for a room not stored yet, or from a lobby being dissolved and not yet back in a queue. Counted as queued
+# by /internal/activity, so a deploy never sees them as "nothing in progress".
 mm_forming = 0
 
 # Restart drain (set by deploy.sh / rollback.sh through /internal/drain): while it lasts, no player can
@@ -1582,7 +1591,9 @@ async def _try_match(uid=None, tier="free"):
     global mm_forming
     queue = _queue_for(tier)
     async with mm_lock:
-        if len(queue) < 4:
+        # While draining no public lobby is formed: requeued players stay in the queue, where the deploy
+        # activity check counts them (a restart drops the in-memory queue anyway).
+        if len(queue) < 4 or drain_seconds_left() > 0:
             return None
         group = [queue.pop(0) for _ in range(4)]
         mm_forming += len(group)

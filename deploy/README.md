@@ -86,10 +86,13 @@ Let `dehla` run exactly these root commands without a password (real Ubuntu 24.0
 `sudo visudo -f /etc/sudoers.d/dehla`:
 
 ```
-dehla ALL=(root) NOPASSWD: /usr/bin/systemctl restart dehla-pakad, /usr/bin/systemctl stop dehla-pakad, /usr/bin/systemctl reload nginx, /usr/sbin/nginx -t
+dehla ALL=(root) NOPASSWD: /usr/bin/systemctl restart dehla-pakad, /usr/bin/systemctl reset-failed dehla-pakad, /usr/bin/systemctl stop dehla-pakad, /usr/bin/systemctl reload nginx, /usr/sbin/nginx -t
 ```
 
-Check: `sudo -u dehla sudo -n -l /usr/bin/systemctl restart dehla-pakad` prints the command.
+Check: `sudo -u dehla sudo -n -l /usr/bin/systemctl restart dehla-pakad` prints the command. `reset-failed` lets a deploy or rollback restart the
+service after systemd's start limit stopped it (otherwise the recovery restart would be refused too);
+deploy.sh and rollback.sh check every entry before switching anything, so an older sudoers file without it
+stops them safely at the pre-flight.
 
 ## 3. Secrets (server only, never in git)
 
@@ -228,14 +231,17 @@ symlink, the tools, every sudo permission, that port 8000 is free or held by thi
 checkout is clean and exactly at the tag; builds the release (marked `INCOMPLETE` until the build succeeds,
 backend from `requirements-prod.txt`); checks that nothing is in progress (`active_matches.py`: active
 matches, public lobbies and rooms that are starting from the database, plus players waiting in the
-in-memory matchmaking queue from the running backend's loopback-only `/api/internal/activity`; anything
-found in the database always counts, even when the queue cannot be read; if the database cannot be
-checked, it refuses with no override); takes a verified backup; asks for confirmation; **drains** the running backend
-(loopback-only `POST /api/internal/drain`: new matchmaking joins and game starts get "The server is
-restarting for an update" until the restart; lifted at once if the script stops before restarting, and
+in-memory matchmaking queue (or moving between it and a public lobby) and live games from the running
+backend's loopback-only `/api/internal/activity`, read before and after the database so nothing moving
+between the two is missed; anything found in the database always counts, even when the queue cannot be
+read; if the database cannot be checked, it refuses with no override); takes a verified backup; asks for
+confirmation; **drains** the running backend (loopback-only `POST /api/internal/drain`: new matchmaking
+joins and game starts get "The server is restarting for an update", and no public lobby is formed, until
+the restart; private rooms can still be created, joined and edited, since they survive a restart; lifted at once if the script stops before restarting, and
 expires by itself after 5 minutes if the script is killed); **checks again right before switching** (the
 backup and the prompt can take minutes, and the drain means nothing new can begin after this check);
-switches `current`; restarts; and health-checks that the service is active, **runs from the new release
+switches `current`; restarts (clearing a systemd start-limit "failed" state first, with `reset-failed`);
+and health-checks that the service is active, **runs from the new release
 folder** and answers on `/api/`. Only then is the release marked `DEPLOYED`. If the restart fails or the
 new release is unhealthy, it is marked `FAILED`, `current` is switched back **and the previous release is
 started again** (on the very first deploy the service is stopped instead).
@@ -247,21 +253,26 @@ refused unless `--queue-unknown` is given; that flag only accepts the case where
 nothing in progress.
 
 Overrides are command-line flags only, never environment variables (an inherited `ALLOW_ACTIVE` or
-`SKIP_BACKUP` is ignored with a warning), each covers one case only, and each needs a typed confirmation:
+`SKIP_BACKUP` is ignored with a warning), each covers one case only, and each needs a typed confirmation.
+Every confirmation, including the y/N before switching, is read from the terminal (`/dev/tty`), never from
+stdin: piped input, here-documents, `yes` or environment variables cannot answer it, and without a terminal
+(cron, CI, `ssh host cmd` without `-t`) deploy.sh and rollback.sh refuse before doing anything.
 
 - `--allow-active`: restart even though matches, lobbies or queued players are in progress (type
   `RESTART DURING PLAY`).
 - `--queue-unknown`: the database shows nothing in progress, but the running backend cannot report or
-  drain its matchmaking queue (type `QUEUE UNKNOWN`). Players waiting in that queue are dropped, and a
-  match could still start in the last seconds before the restart (it resumes from the database
-  afterwards). It never overrides matches or lobbies found in the database.
+  drain its matchmaking queue (type `QUEUE UNKNOWN`). **That backend's in-memory matchmaking queue is
+  lost**: everyone waiting in it is dropped by the restart and has to search again. A match could also
+  still start in the last seconds before the restart (it resumes from the database afterwards). It never
+  overrides matches, lobbies or starting rooms found in the database, and never a failed database check.
 - `--skip-backup`: no backup before switching (type `NO BACKUP`).
 - A failed database check is never overridden.
 
 **First deploy over the existing production backend** (a release without this kit's activity and drain
 endpoints): it needs `--queue-unknown`, and that backend cannot be drained. Do it in an announced
 maintenance window, with the old backend's matchmaking unused, and read the counts deploy.sh prints at
-each check (`active_matches=0 public_lobbies=0 starting_rooms=0 queued_players=unknown`). If an older deployment
+each check (`active_matches=0 public_lobbies=0 starting_rooms=0 backend_in_memory=unknown`). The old
+backend's matchmaking queue is lost in this restart (it lives only in that process). If an older deployment
 runs outside this layout (another port or service), stop it before the first deploy: the scripts cannot
 see it, and two backends on one database would both drive the same active games.
 3. Smoke test: open the site, sign in, confirm the green "Online" status (WebSocket), create a private

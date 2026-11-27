@@ -27,6 +27,26 @@ CURRENT="$(readlink -e "$BASE/current" 2>/dev/null || true)"
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 warn() { echo "!!! WARNING: $*" >&2; }
+# Every confirmation is read from the controlling terminal (/dev/tty), never from stdin: piped input,
+# here-documents, `yes`, environment variables or inherited shell state cannot answer it. Without a
+# terminal (cron, CI, ssh without -t) the script refuses.
+ask_tty() {  # $1 = prompt; sets TTY_REPLY to the line a person typed
+  TTY_REPLY=""
+  { exec 8</dev/tty; } 2>/dev/null || fail "this step needs a person at an interactive terminal (no /dev/tty); nothing was switched"
+  printf '%s' "$1" >/dev/tty
+  IFS= read -r TTY_REPLY <&8 || TTY_REPLY=""
+  exec 8<&-
+}
+
+# Every restart first clears a "failed" state left by systemd's start limit (StartLimitBurst in the unit:
+# repeated crashes or restarts within 120 s); otherwise `systemctl restart` is refused and a recovery
+# restart could never bring the previous release back. Needs the reset-failed sudoers entry (checked in
+# the pre-flight, before anything is switched).
+restart_service() {
+  sudo -n "$SYSTEMCTL" reset-failed "$SERVICE" 2>/dev/null || warn "could not clear the failed state of $SERVICE (sudo reset-failed refused)"
+  sudo -n "$SYSTEMCTL" restart "$SERVICE"
+}
+
 usable() {  # was live before, complete, and not marked failed
   [[ -d "$1/backend" && -d "$1/venv" && -f "$1/frontend/build/index.html" && -f "$1/DEPLOYED" &&
      ! -e "$1/FAILED" && ! -e "$1/INCOMPLETE" ]]
@@ -70,7 +90,10 @@ fi
 exec 9>"$BASE/.deploy.lock"
 flock -n 9 || fail "another deploy or rollback is running"
 [[ -n "${ALLOW_ACTIVE:-}" ]] && warn "the ALLOW_ACTIVE environment variable is ignored; use --allow-active"
-for cmd in "$SYSTEMCTL restart $SERVICE" "$SYSTEMCTL reload nginx" "$NGINX -t"; do
+# A person must confirm the switch: refuse now, before building anything, when there is no terminal.
+{ exec 8</dev/tty; } 2>/dev/null || fail "run this from an interactive terminal (no /dev/tty: cron, CI and 'ssh host cmd' without -t cannot confirm)"
+exec 8<&-
+for cmd in "$SYSTEMCTL restart $SERVICE" "$SYSTEMCTL reset-failed $SERVICE" "$SYSTEMCTL reload nginx" "$NGINX -t"; do
   # shellcheck disable=SC2086
   sudo -n -l $cmd >/dev/null 2>&1 || fail "the dehla user may not run 'sudo $cmd' without a password (see deploy/README.md, sudoers)"
 done
@@ -93,7 +116,7 @@ activity_gate() {
   "$TARGET/venv/bin/python" "$SCRIPTS/active_matches.py" "$SHARED/backend.env" "$PORT"
   state=$?
   set -e
-  local answer phrase
+  local phrase
   case $state in
     0) return 0 ;;
     3)
@@ -107,8 +130,8 @@ activity_gate() {
       phrase="QUEUE UNKNOWN" ;;
     *) fail "it could not be checked whether matches are in progress (database check failed); fix the check and try again" ;;
   esac
-  read -r -p "Type '$phrase' to continue: " answer
-  [[ "$answer" == "$phrase" ]] || fail "not confirmed; nothing was switched"
+  ask_tty "Type '$phrase' to continue: "
+  [[ "$TTY_REPLY" == "$phrase" ]] || fail "not confirmed; nothing was switched"
 }
 
 # Restart drain (same as deploy.sh): the running backend refuses new queue joins and game starts until it
@@ -137,8 +160,8 @@ echo "== matches in progress?"
 activity_gate
 echo "Current: $(describe "${CURRENT:-<none>}")"
 echo "Target:  $(describe "$TARGET")"
-read -r -p "Roll back now? [y/N] " ok
-[[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "Cancelled."; exit 1; }
+ask_tty "Roll back now? [y/N] "
+[[ "$TTY_REPLY" == "y" || "$TTY_REPLY" == "Y" ]] || { echo "Cancelled."; exit 1; }
 echo "== draining: new queue joins and game starts are refused until the restart"
 drain_backend
 echo "== matches in progress? (right before switching)"
@@ -146,7 +169,7 @@ activity_gate
 
 switch_to "$TARGET"
 DRAINED=0  # from here the restart ends the drain (a new process always starts undrained)
-if sudo -n "$SYSTEMCTL" restart "$SERVICE" && wait_healthy "$TARGET"; then
+if restart_service && wait_healthy "$TARGET"; then
   date -u +%Y-%m-%dT%H:%M:%SZ > "$TARGET/DEPLOYED"
   if sudo -n "$NGINX" -t; then sudo -n "$SYSTEMCTL" reload nginx; fi
   echo "Rolled back to $TARGET"
@@ -158,7 +181,7 @@ touch "$TARGET/FAILED"
 echo "target release is not healthy; restoring ${CURRENT:-<none>}" >&2
 if [[ -n "$CURRENT" && -d "$CURRENT" ]]; then
   switch_to "$CURRENT"
-  sudo -n "$SYSTEMCTL" restart "$SERVICE" || true
+  restart_service || true
   wait_healthy "$CURRENT" && fail "rollback failed; the previous release ($CURRENT) is running again" ||
     fail "rollback failed and the previous release did not come back; check: journalctl -u $SERVICE -n 200"
 fi

@@ -62,10 +62,29 @@ NGINX=/usr/sbin/nginx
 fail() { echo "ERROR: $*" >&2; exit 1; }
 warn() { echo "!!! WARNING: $*" >&2; }
 
+# Every confirmation is read from the controlling terminal (/dev/tty), never from stdin: piped input,
+# here-documents, `yes`, environment variables or inherited shell state cannot answer it. Without a
+# terminal (cron, CI, ssh without -t) the script refuses.
+ask_tty() {  # $1 = prompt; sets TTY_REPLY to the line a person typed
+  TTY_REPLY=""
+  { exec 8</dev/tty; } 2>/dev/null || fail "this step needs a person at an interactive terminal (no /dev/tty); nothing was switched"
+  printf '%s' "$1" >/dev/tty
+  IFS= read -r TTY_REPLY <&8 || TTY_REPLY=""
+  exec 8<&-
+}
+
+# Every restart first clears a "failed" state left by systemd's start limit (StartLimitBurst in the unit:
+# repeated crashes or restarts within 120 s); otherwise `systemctl restart` is refused and a recovery
+# restart could never bring the previous release back. Needs the reset-failed sudoers entry (checked in
+# the pre-flight, before anything is switched).
+restart_service() {
+  sudo -n "$SYSTEMCTL" reset-failed "$SERVICE" 2>/dev/null || warn "could not clear the failed state of $SERVICE (sudo reset-failed refused)"
+  sudo -n "$SYSTEMCTL" restart "$SERVICE"
+}
+
 confirm_exact() {  # $1 = prompt, $2 = the exact text the operator must type
-  local answer
-  read -r -p "$1 Type '$2' to continue: " answer
-  [[ "$answer" == "$2" ]] || fail "not confirmed; nothing was switched"
+  ask_tty "$1 Type '$2' to continue: "
+  [[ "$TTY_REPLY" == "$2" ]] || fail "not confirmed; nothing was switched"
 }
 
 switch_to() {  # atomically point "current" at a release folder
@@ -134,7 +153,7 @@ trap undrain_backend EXIT
 restore_previous() {
   if [[ -n "$PREVIOUS" && -d "$PREVIOUS" ]]; then
     switch_to "$PREVIOUS"
-    sudo -n "$SYSTEMCTL" restart "$SERVICE" || true
+    restart_service || true
     local back=0
     for _ in $(seq 1 45); do healthy "$PREVIOUS" && { back=1; break; }; sleep 1; done
     if [[ $back -eq 1 ]]; then echo "previous release is running again" >&2
@@ -157,7 +176,10 @@ flock -n 9 || fail "another deploy or rollback is running"
 [[ -f "$SHARED/backend.env" ]] || fail "missing $SHARED/backend.env"
 [[ -e "$BASE/current" && ! -L "$BASE/current" ]] && fail "$BASE/current exists and is not a symlink (an older deployment?)"
 for tool in git python3.12 yarn curl ss flock mongodump; do command -v "$tool" >/dev/null || fail "$tool is not installed"; done
-for cmd in "$SYSTEMCTL restart $SERVICE" "$SYSTEMCTL stop $SERVICE" "$SYSTEMCTL reload nginx" "$NGINX -t"; do
+# A person must confirm the switch: refuse now, before building anything, when there is no terminal.
+{ exec 8</dev/tty; } 2>/dev/null || fail "run this from an interactive terminal (no /dev/tty: cron, CI and 'ssh host cmd' without -t cannot confirm)"
+exec 8<&-
+for cmd in "$SYSTEMCTL restart $SERVICE" "$SYSTEMCTL reset-failed $SERVICE" "$SYSTEMCTL stop $SERVICE" "$SYSTEMCTL reload nginx" "$NGINX -t"; do
   # shellcheck disable=SC2086
   sudo -n -l $cmd >/dev/null 2>&1 || fail "the dehla user may not run 'sudo $cmd' without a password (see deploy/README.md, sudoers)"
 done
@@ -209,8 +231,8 @@ else
   "$SCRIPTS/backup.sh" predeploy
 fi
 
-read -r -p "Switch the live site to $REF now? [y/N] " ok
-[[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "Cancelled. The built release stays in $RELEASE (never live)."; exit 1; }
+ask_tty "Switch the live site to $REF now? [y/N] "
+[[ "$TTY_REPLY" == "y" || "$TTY_REPLY" == "Y" ]] || { echo "Cancelled. The built release stays in $RELEASE (never live)."; exit 1; }
 
 # The backup and the prompt can take minutes: stop anything new from starting, then check again
 # immediately before switching.
@@ -223,7 +245,7 @@ echo "== switch release"
 PREVIOUS="$(readlink -e "$BASE/current" 2>/dev/null || true)"
 switch_to "$RELEASE"
 DRAINED=0  # from here the restart ends the drain (a new process always starts undrained)
-if ! sudo -n "$SYSTEMCTL" restart "$SERVICE"; then
+if ! restart_service; then
   # Never leave "current" pointing at a release that is not running, nor the site without a backend.
   touch "$RELEASE/FAILED"
   echo "could not restart $SERVICE with the new release; switching back to ${PREVIOUS:-<none>}" >&2
