@@ -97,16 +97,38 @@ activity_gate() {
   [[ "$answer" == "RESTART DURING PLAY" ]] || fail "not confirmed; nothing was switched"
 }
 
+# Restart drain (same as deploy.sh): the running backend refuses new queue joins and game starts until it
+# restarts, is lifted at once if this script stops first, and expires by itself otherwise.
+DRAIN_SECONDS=300
+DRAINED=0
+drain_backend() {
+  local code=0
+  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=$DRAIN_SECONDS" >/dev/null 2>&1 || code=$?
+  if [[ $code -eq 0 ]]; then DRAINED=1; sleep 2; return 0; fi  # the pause lets requests already running finish
+  [[ $code -eq 7 ]] && return 0  # nothing listening on the port: no backend, nothing can start
+  [[ $ALLOW_ACTIVE_FLAG -eq 1 ]] && { warn "the running backend could not be drained (an older release?); continuing because of --allow-active"; return 0; }
+  fail "the running backend could not be drained before the restart; nothing was switched. Try again later."
+}
+undrain_backend() {
+  [[ $DRAINED -eq 1 ]] || return 0
+  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=0" >/dev/null 2>&1 || true
+  DRAINED=0
+}
+trap undrain_backend EXIT
+
 echo "== matches in progress?"
 activity_gate
 echo "Current: $(describe "${CURRENT:-<none>}")"
 echo "Target:  $(describe "$TARGET")"
 read -r -p "Roll back now? [y/N] " ok
 [[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "Cancelled."; exit 1; }
+echo "== draining: new queue joins and game starts are refused until the restart"
+drain_backend
 echo "== matches in progress? (right before switching)"
 activity_gate
 
 switch_to "$TARGET"
+DRAINED=0  # from here the restart ends the drain (a new process always starts undrained)
 if sudo -n "$SYSTEMCTL" restart "$SERVICE" && wait_healthy "$TARGET"; then
   date -u +%Y-%m-%dT%H:%M:%SZ > "$TARGET/DEPLOYED"
   if sudo -n "$NGINX" -t; then sudo -n "$SYSTEMCTL" reload nginx; fi

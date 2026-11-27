@@ -1330,6 +1330,7 @@ async def _release_start_claim(code):
 
 
 async def _start(room):
+    refuse_if_draining()
     claimed = await db.rooms.find_one_and_update(
         scoped_query({"code": room["code"], "status": "lobby"}, ENV), {"$set": {"status": "starting"}},
         projection={"_id": 0}, return_document=ReturnDocument.BEFORE,
@@ -1337,6 +1338,11 @@ async def _start(room):
     if not claimed:
         raise HTTPException(409, "Game already starting")
     room = claimed
+    # A drain switched on while the claim was being written: give the room back. If this check sees no
+    # drain, the claim was already stored before the drain began, so the deploy's final check counts it.
+    if drain_seconds_left() > 0:
+        await _release_start_claim(room["code"])
+        raise HTTPException(503, DRAIN_MESSAGE)
     # The readiness check before the claim can be stale: a player may have left or a bot may have been
     # removed in between. Re-validate the claimed snapshot, which no lobby edit can change any more.
     if not _all_ready(room):
@@ -1500,6 +1506,25 @@ async def private_lobby_chat(code: str, member: dict = Depends(player)):
 mm_queue: list[str] = []
 mm_stake_queues: dict[str, list[str]] = {tier: [] for tier in STAKE_TIERS}
 mm_lock = asyncio.Lock()
+# Players taken off a queue whose public room is not in the database yet (counted as queued by
+# /internal/activity, so a deploy never sees them as "nothing in progress").
+mm_forming = 0
+
+# Restart drain (set by deploy.sh / rollback.sh through /internal/drain): while it lasts, no player can
+# join a matchmaking queue and no game can start, so the final activity check cannot be overtaken. It
+# expires on its own (an aborted deploy fails safe) and a new process always starts undrained.
+DRAIN_MAX_SECONDS = 600
+DRAIN_MESSAGE = "The server is restarting for an update. Please try again in a minute."
+drain_until = 0.0
+
+
+def drain_seconds_left() -> int:
+    return max(0, math.ceil(drain_until - time.monotonic()))
+
+
+def refuse_if_draining():
+    if drain_seconds_left() > 0:
+        raise HTTPException(503, DRAIN_MESSAGE)
 
 
 def _queue_for(tier):
@@ -1533,8 +1558,12 @@ async def mm_join(body: Optional[MatchmakingJoinIn] = None, member: dict = Depen
         raise HTTPException(409, "You are already in an active game")
     if tier != "free":
         await _require_stake_seat(member, tier)
+    refuse_if_draining()
     await leave_all_lobbies(uid)
     async with mm_lock:
+        # Checked again under the lock with no await before the append, so a join can never land in a
+        # queue after the drain was switched on.
+        refuse_if_draining()
         if _queued_tier(uid) != tier:
             _remove_from_queues(uid)
             _queue_for(tier).append(uid)
@@ -1550,18 +1579,23 @@ READY_TIMEOUT = 60
 
 
 async def _try_match(uid=None, tier="free"):
+    global mm_forming
     queue = _queue_for(tier)
     async with mm_lock:
         if len(queue) < 4:
             return None
         group = [queue.pop(0) for _ in range(4)]
-    random.SystemRandom().shuffle(group)
-    room = {"env": ENV, "code": await new_code(), "host_id": None, "is_public": True, "status": "lobby", "target": 7,
-            "turn_duration": PUBLIC_TURN_DURATION,
-            "dealer_seat": secrets.randbelow(4), "seats": group, "ready": {}, "created_at": now_iso()}
-    if tier in mm_stake_queues:
-        room["stake_tier"] = tier
-    await db.rooms.insert_one(dict(room))
+        mm_forming += len(group)
+    try:
+        random.SystemRandom().shuffle(group)
+        room = {"env": ENV, "code": await new_code(), "host_id": None, "is_public": True, "status": "lobby", "target": 7,
+                "turn_duration": PUBLIC_TURN_DURATION,
+                "dealer_seat": secrets.randbelow(4), "seats": group, "ready": {}, "created_at": now_iso()}
+        if tier in mm_stake_queues:
+            room["stake_tier"] = tier
+        await db.rooms.insert_one(dict(room))
+    finally:
+        mm_forming -= len(group)
     await hub.send_many(group, {"type": "match_found", "code": room["code"], "ready_timeout": READY_TIMEOUT})
     asyncio.create_task(_ready_deadline(room["code"]))
     return room["code"] if uid in group else None
@@ -2524,10 +2558,27 @@ async def internal_activity(request: Request):
     if not is_direct_loopback(request):
         raise HTTPException(404, "Not Found")
     return {
-        "queued_players": len(mm_queue) + sum(len(q) for q in mm_stake_queues.values()),
+        "queued_players": len(mm_queue) + sum(len(q) for q in mm_stake_queues.values()) + mm_forming,
         "active_games": sum(1 for g in games.games.values() if g.get("status") == "active"),
         "connected_players": sum(1 for sockets in hub.sockets.values() if sockets),
+        "draining": drain_seconds_left() > 0,
     }
+
+
+@api_router.post("/internal/drain")
+async def internal_drain(request: Request, seconds: int = 120):
+    """deploy.sh / rollback.sh, right before a restart: refuse new queue joins and game starts for
+    `seconds` (at most DRAIN_MAX_SECONDS; 0 ends the drain). Served to the server itself only."""
+    global drain_until
+    if not is_direct_loopback(request):
+        raise HTTPException(404, "Not Found")
+    seconds = max(0, min(int(seconds), DRAIN_MAX_SECONDS))
+    drain_until = time.monotonic() + seconds if seconds else 0.0
+    if seconds:
+        logger.warning("Restart drain on for %ss: new queue joins and game starts are refused", seconds)
+    else:
+        logger.info("Restart drain ended")
+    return {"draining": seconds > 0, "seconds_left": drain_seconds_left()}
 
 
 # ---------------- websocket ----------------

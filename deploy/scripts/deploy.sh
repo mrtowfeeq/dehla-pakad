@@ -43,6 +43,9 @@ PORT=8000
 STAMP="$(date +%Y%m%d-%H%M%S)"
 RELEASE="$BASE/releases/$STAMP-${REF//\//_}"
 KEEP=5
+# How long the restart drain lasts if the script never gets to the restart (it is lifted at once on a
+# normal abort, and ends with the restart). Long enough for a typed --allow-active confirmation.
+DRAIN_SECONDS=300
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Commands that need root are run with `sudo -n` (never prompt): see the sudoers line in deploy/README.md.
@@ -89,6 +92,41 @@ activity_gate() {  # refuse to restart while anything is in progress, unless --a
   fi
   warn "$what. --allow-active was given: restarting will interrupt them."
   confirm_exact "Restart anyway?" "RESTART DURING PLAY"
+}
+
+# Restart drain: the running backend refuses new queue joins and game starts until it restarts (or the
+# drain expires), so nothing can begin between the final activity check and the restart.
+DRAINED=0
+drain_backend() {
+  local code=0
+  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=$DRAIN_SECONDS" >/dev/null 2>&1 || code=$?
+  if [[ $code -eq 0 ]]; then DRAINED=1; sleep 2; return 0; fi  # the pause lets requests already running finish
+  [[ $code -eq 7 ]] && return 0  # nothing listening on the port: no backend, nothing can start
+  [[ $ALLOW_ACTIVE_FLAG -eq 1 ]] && { warn "the running backend could not be drained (an older release?); continuing because of --allow-active"; return 0; }
+  fail "the running backend could not be drained before the restart; the release is built ($RELEASE). Try again later."
+}
+undrain_backend() {  # an aborted deploy lifts the drain at once (it would also expire by itself)
+  [[ $DRAINED -eq 1 ]] || return 0
+  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=0" >/dev/null 2>&1 || true
+  DRAINED=0
+}
+trap undrain_backend EXIT
+
+# Point "current" back at the release that was live and start it again (used when the new release cannot
+# be started or is unhealthy). On a first deploy there is nothing to go back to: stop the service.
+restore_previous() {
+  if [[ -n "$PREVIOUS" && -d "$PREVIOUS" ]]; then
+    switch_to "$PREVIOUS"
+    sudo -n "$SYSTEMCTL" restart "$SERVICE" || true
+    local back=0
+    for _ in $(seq 1 45); do healthy "$PREVIOUS" && { back=1; break; }; sleep 1; done
+    if [[ $back -eq 1 ]]; then echo "previous release is running again" >&2
+    else echo "WARNING: the previous release did not come back either; check: journalctl -u $SERVICE -n 200" >&2; fi
+  else
+    # First deploy: its start limit also stops retries at boot.
+    rm -f "$BASE/current"
+    sudo -n "$SYSTEMCTL" stop "$SERVICE" || true
+  fi
 }
 
 # ---------- one deploy or rollback at a time ----------
@@ -157,18 +195,23 @@ fi
 read -r -p "Switch the live site to $REF now? [y/N] " ok
 [[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "Cancelled. The built release stays in $RELEASE (never live)."; exit 1; }
 
-# The backup and the prompt can take minutes: check again immediately before switching.
+# The backup and the prompt can take minutes: stop anything new from starting, then check again
+# immediately before switching.
+echo "== draining: new queue joins and game starts are refused until the restart"
+drain_backend
 echo "== matches in progress? (final check, right before switching)"
 activity_gate
 
 echo "== switch release"
 PREVIOUS="$(readlink -e "$BASE/current" 2>/dev/null || true)"
 switch_to "$RELEASE"
+DRAINED=0  # from here the restart ends the drain (a new process always starts undrained)
 if ! sudo -n "$SYSTEMCTL" restart "$SERVICE"; then
-  # Never leave "current" pointing at a release that is not running.
-  if [[ -n "$PREVIOUS" && -d "$PREVIOUS" ]]; then switch_to "$PREVIOUS"; else rm -f "$BASE/current"; fi
+  # Never leave "current" pointing at a release that is not running, nor the site without a backend.
   touch "$RELEASE/FAILED"
-  fail "could not restart $SERVICE; 'current' was switched back"
+  echo "could not restart $SERVICE with the new release; switching back to ${PREVIOUS:-<none>}" >&2
+  restore_previous
+  fail "could not restart $SERVICE with $REF (see: journalctl -u $SERVICE -n 200)"
 fi
 
 echo "== health check"
@@ -180,18 +223,7 @@ done
 if [[ "$ok" != "1" ]]; then
   touch "$RELEASE/FAILED"
   echo "new release is not healthy; switching back to ${PREVIOUS:-<none>}" >&2
-  if [[ -n "$PREVIOUS" && -d "$PREVIOUS" ]]; then
-    switch_to "$PREVIOUS"
-    sudo -n "$SYSTEMCTL" restart "$SERVICE" || true
-    back=0
-    for _ in $(seq 1 45); do healthy "$PREVIOUS" && { back=1; break; }; sleep 1; done
-    [[ $back -eq 1 ]] && echo "previous release is running again" >&2 ||
-      echo "WARNING: the previous release did not come back either; check: journalctl -u $SERVICE -n 200" >&2
-  else
-    # First deploy: nothing to go back to. Stop the service (its start limit also stops retries at boot).
-    rm -f "$BASE/current"
-    sudo -n "$SYSTEMCTL" stop "$SERVICE" || true
-  fi
+  restore_previous
   fail "deploy of $REF failed health check (see: journalctl -u $SERVICE -n 200)"
 fi
 date -u +%Y-%m-%dT%H:%M:%SZ > "$RELEASE/DEPLOYED"

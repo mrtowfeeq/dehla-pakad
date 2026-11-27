@@ -229,11 +229,20 @@ checkout is clean and exactly at the tag; builds the release (marked `INCOMPLETE
 backend from `requirements-prod.txt`); checks that nothing is in progress (`active_matches.py`: active
 matches, public lobbies and rooms that are starting from the database, plus players waiting in the
 in-memory matchmaking queue from the running backend's loopback-only `/api/internal/activity`; if it
-cannot check, it refuses); takes a verified backup; asks for confirmation; **checks again right before
-switching** (the backup and the prompt can take minutes); switches `current`; restarts; and health-checks
-that the service is active, **runs from the new release folder** and answers on `/api/`. Only then is the
-release marked `DEPLOYED`. On failure it is marked `FAILED` and the previous release is switched back (on
-the very first deploy the service is stopped instead).
+cannot check, it refuses); takes a verified backup; asks for confirmation; **drains** the running backend
+(loopback-only `POST /api/internal/drain`: new matchmaking joins and game starts get "The server is
+restarting for an update" until the restart; lifted at once if the script stops before restarting, and
+expires by itself after 5 minutes if the script is killed); **checks again right before switching** (the
+backup and the prompt can take minutes, and the drain means nothing new can begin after this check);
+switches `current`; restarts; and health-checks that the service is active, **runs from the new release
+folder** and answers on `/api/`. Only then is the release marked `DEPLOYED`. If the restart fails or the
+new release is unhealthy, it is marked `FAILED`, `current` is switched back **and the previous release is
+started again** (on the very first deploy the service is stopped instead).
+
+A backend that is not running at all counts as "no queue and nothing to drain" (no process holds one);
+active matches and lobbies are still checked in the database. A running backend that cannot be drained
+(for example the release before this one, which has no drain endpoint) is refused unless `--allow-active`
+is given, which the activity check already requires in that case.
 
 Overrides are command-line flags only, never environment variables (an inherited `ALLOW_ACTIVE` or
 `SKIP_BACKUP` is ignored with a warning), and each needs a typed confirmation:
@@ -260,9 +269,11 @@ sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/rollback.sh /opt/dehla-pakad/
 
 Only releases that were live before (`DEPLOYED`) can be rolled back to; a release that was built but never
 switched to, or that failed, is refused (go forward with `deploy.sh` instead). Without a folder it picks
-the newest earlier live release, shows it and asks. Like a deploy it waits for an empty table and checks
-again right before switching (`--allow-active` plus typing `RESTART DURING PLAY` to override). If the
-target does not come up healthy, it is marked `FAILED` and the release that was running is restored.
+the newest earlier live release, shows it and asks. Like a deploy it waits for an empty table, drains the
+running backend and checks again right before switching (`--allow-active` plus typing `RESTART DURING PLAY` to override). If the
+target does not come up healthy, it is marked `FAILED` and the release that was running is restored. A
+`FAILED` mark is permanent: if the cause was passing (for example a short database outage) and that release
+is known to be good, remove its `FAILED` file by hand before trying it again.
 Code-only: newer releases add fields, collections and indexes that older code ignores.
 Database recovery (only for confirmed corruption): stop the backend; take a fresh dump of the current state
 (`backup.sh`); restore the chosen archive into a scratch database and check it; then restore into
