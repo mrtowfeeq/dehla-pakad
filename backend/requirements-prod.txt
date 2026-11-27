@@ -1,0 +1,36 @@
+# Production dependencies for the Dehla Pakad backend: only what the app imports at runtime, pinned to
+# the exact versions the test suite passes with. deploy/scripts/deploy.sh installs this file (not
+# requirements.txt, which also carries development tools). Update deliberately, re-run the tests, then pin.
+
+# Web framework and server (websockets: the /api/ws endpoint; httptools: faster HTTP parsing)
+fastapi==0.110.1
+starlette==0.37.2
+uvicorn==0.25.0
+websockets==17.4
+httptools==0.9.0
+h11==0.16.0
+click==8.5.1
+anyio==4.16.0
+
+# Data
+motor==3.7.1
+pymongo==4.18.2
+dnspython==2.9.2
+pydantic==2.14.4
+pydantic_core==2.50.5
+annotated-types==0.8.0
+typing_extensions==4.16.0
+
+# Configuration
+python-dotenv==1.2.4
+
+# Clerk: session JWT verification (RS256 needs cryptography) and API calls
+PyJWT==2.15.1
+cryptography==50.0.2
+cffi==2.1.1
+pycparser==3.12
+requests==2.34.2
+urllib3==2.8.0
+certifi==2026.11.20
+idna==3.20
+charset-normalizer==3.5.3

@@ -12,15 +12,19 @@ User=dehla
 Group=dehla
 WorkingDirectory=/opt/dehla-pakad/current/backend
 # Secrets live only in this file on the server (chmod 600, owned by dehla). Never commit it.
+# systemd does not support comments after a value: keep every line plain NAME=value.
 EnvironmentFile=/opt/dehla-pakad/shared/backend.env
 # Loopback only: Nginx is the only way in. --no-proxy-headers: the app itself decides which forwarded
 # addresses to trust (TRUSTED_PROXY_CIDRS), see docs/admin-security-deployment.md.
-ExecStart=/opt/dehla-pakad/current/venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers --log-level info
+# --timeout-graceful-shutdown: open WebSockets (game, voice) are closed after 5 s on stop, so the
+# shutdown hook runs and the restart stays short; clients reconnect automatically.
+ExecStart=/opt/dehla-pakad/current/venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers --timeout-graceful-shutdown 5 --log-level info
 Restart=always
 RestartSec=3
-# Give open games a moment to persist on stop.
-TimeoutStopSec=20
 KillSignal=SIGINT
+TimeoutStopSec=15
+# Each player keeps a WebSocket open; the default limit of 1024 open files would cap concurrent players.
+LimitNOFILE=65536
 
 # Hardening
 NoNewPrivileges=true

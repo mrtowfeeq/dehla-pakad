@@ -1,257 +1,282 @@
 # Deploying Dehla Pakad to the Hostinger VPS
 
-This is the procedure for our own Ubuntu VPS: Nginx serves the React build and proxies `/api` to a single
-Uvicorn process; Clerk handles sign-in; MongoDB Atlas holds the data; coturn relays voice. Nothing here
-runs automatically. Deploy only after explicit approval and a successful local test run (see `AGENTS.md`).
+Nginx serves the React build and proxies `/api` to a single Uvicorn process; Clerk handles sign-in; MongoDB
+Atlas holds the data; coturn relays voice. Nothing here runs automatically. Deploy only after explicit
+approval and a successful local test run (see `AGENTS.md`).
 
-**Do not assume the VPS is empty.** Every step below first checks what is already there and never
-overwrites an existing file without keeping a copy. Stop and ask if a check finds something unexpected.
-
-Files in this folder:
+**Do not assume the VPS is empty.** Every command below either only reads, or skips itself when the thing
+it would create already exists, or keeps a copy before replacing a file. When a check prints `STOP`, stop
+and review before continuing.
 
 | File | Goes to |
 |---|---|
 | `systemd/dehla-pakad.service` | `/etc/systemd/system/dehla-pakad.service` |
-| `nginx/dehlapakad.tech.http-only.conf` | `/etc/nginx/sites-available/dehlapakad.tech` — step 1, until the certificate exists |
-| `nginx/dehlapakad.tech.conf` | `/etc/nginx/sites-available/dehlapakad.tech` — step 2, the real site |
-| `scripts/deploy.sh`, `rollback.sh`, `backup.sh` | run from `/opt/dehla-pakad/repo/deploy/scripts/` |
+| `nginx/dehlapakad.tech.http-only.conf` | `/etc/nginx/sites-available/dehlapakad.tech` — until the certificate exists |
+| `nginx/dehlapakad.tech.conf` | `/etc/nginx/sites-available/dehlapakad.tech` — the real site |
 | `coturn/turnserver.conf.example` | `/etc/turnserver.conf` (fill in) |
+| `coturn/certbot-deploy-hook.sh` | `/etc/letsencrypt/renewal-hooks/deploy/coturn.sh` |
+| `scripts/deploy.sh`, `rollback.sh`, `backup.sh`, `active_matches.py` | run from `/opt/dehla-pakad/repo/deploy/scripts/` |
+
+See also `docs/admin-security-deployment.md` (database scoping, old global indexes, proxy trust).
 
 ## 0. Confirm before the first deploy (read-only)
 
-Run these and keep the output; none of them change anything:
-
 ```bash
-lsb_release -a; nproc; free -h; df -h /              # OS, CPU, RAM (frontend build needs ~2 GB incl. swap), disk
+lsb_release -a; nproc; free -h; df -h /              # Ubuntu 24.04? RAM (the frontend build needs ~2 GB incl. swap), disk
 ss -tlnp; ss -ulnp                                     # who listens on 22/80/443/3478/5349/8000
 systemctl list-units --type=service --state=running   # nginx/apache/openlitespeed/docker/coturn/panels
 ls -la /opt /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null
 grep -Rn "dehlapakad\|connection_upgrade" /etc/nginx 2>/dev/null
 id dehla; ls -la /opt/dehla-pakad 2>/dev/null; systemctl status dehla-pakad 2>/dev/null | head -3
 ls /etc/letsencrypt/live 2>/dev/null; ls -la /etc/turnserver.conf 2>/dev/null
-node -v; npm -v; python3.12 --version; git --version; mongodump --version 2>/dev/null
+node -v; corepack --version; yarn -v; python3.12 --version; git --version; mongodump --version 2>/dev/null
 sudo ufw status verbose; sudo grep -E "^\s*Port " /etc/ssh/sshd_config /etc/ssh/sshd_config.d/* 2>/dev/null
 ```
 
-Also confirm:
+Also confirm: the Hostinger template / control panel (some own ports 80/443) and Hostinger's panel firewall;
+the VPS public IPv4 (and IPv6, if any) and the SSH port; whether an older deployment of dehlapakad.tech (or
+its data) exists and what happens to it; DNS `dehlapakad.tech` and `www` A (AAAA only if IPv6 works)
+records; MongoDB Atlas cluster, tier, backups, IP access list and a production `DB_NAME` separate from
+development (and whether it already holds data — see the old-indexes note in
+`docs/admin-security-deployment.md`); a Clerk **production** instance (section 7); where TURN runs.
 
-- Hostinger template / control panel (some own ports 80/443), Hostinger's panel firewall rules, the
-  VPS public IPv4 (and IPv6, if any), and the SSH port.
-- Whether an older deployment of dehlapakad.tech (or its data) exists, and what happens to it.
-- DNS: `dehlapakad.tech` and `www` A (and AAAA only if IPv6 works) records point to the VPS.
-- MongoDB Atlas: cluster and tier, backups enabled, the IP access list, and a production `DB_NAME` that
-  is separate from development/preview (and whether it already holds data).
-- Clerk: a **production** instance for `dehlapakad.tech` (section 6).
-- Where TURN will run (this VPS or another host) and its public IP.
+## 1. Code on GitHub
 
-## 1. One-time server setup (only what is missing)
+The server deploys tags from GitHub, so the deployment files must be on the branch and tag it fetches.
+Today they exist only on `feature/private-lobby-chat` (not on `main`). With approval: push the branch,
+merge it into `main` (or deploy from the branch), then tag the tested commit, e.g. `v1.0.0`, and push
+the tag.
 
-Install only packages that are not there yet. Do **not** run `apt upgrade -y` on a shared box: it can
-restart other services. Upgrade in a planned maintenance window instead.
+## 2. One-time server setup (only what is missing)
+
+Do **not** run `apt upgrade -y` on a shared box (it can restart other services); upgrade in a planned
+maintenance window instead.
 
 ```bash
 sudo apt update
 sudo apt install -y nginx certbot python3.12 python3.12-venv git curl ufw   # apt skips installed ones
+# MongoDB Database Tools (mongodump, mongorestore): install the Ubuntu package from mongodb.com
 ```
 
-Node.js and Yarn: if `node -v` already shows 18, 20 or 22, keep it (other apps may depend on that
-version) and only enable Yarn 1. Install Node only when it is missing:
+The service user and folders. Each line skips itself if the thing already exists, and prints STOP:
 
 ```bash
-command -v node || { curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs; }
-sudo corepack enable && sudo -u dehla corepack prepare yarn@1.22.22 --activate   # after the user exists
+if id dehla >/dev/null 2>&1; then echo "STOP: user dehla already exists"; else
+  sudo adduser --system --group --home /opt/dehla-pakad --shell /bin/bash dehla && sudo chmod 755 /opt/dehla-pakad; fi
+# releases must be readable by Nginx (www-data serves the build); shared holds secrets and backups
+for spec in "releases 755" "shared 750" "shared/backups 700"; do set -- $spec; d="/opt/dehla-pakad/$1"
+  if [ -e "$d" ]; then echo "STOP: $d already exists"; else sudo install -d -o dehla -g dehla -m "$2" "$d"; fi
+done
+sudo test -d /var/www/certbot || sudo install -d -m 755 /var/www/certbot
+if [ -e /opt/dehla-pakad/repo ]; then echo "STOP: /opt/dehla-pakad/repo already exists"; else
+  sudo -u dehla git clone <github repo url> /opt/dehla-pakad/repo; fi     # private repo: a read-only deploy key
 ```
 
-MongoDB Database Tools (`mongodump`, `mongorestore`): install the Ubuntu package from mongodb.com.
-
-The service user and folders (stops if they already exist instead of taking them over):
+Node.js and Yarn 1. If `node -v` already shows 18, 20 or 22, keep it (other apps may depend on it):
 
 ```bash
-id dehla 2>/dev/null && echo "user dehla already exists: STOP and review" || \
-  sudo adduser --system --group --home /opt/dehla-pakad --shell /bin/bash dehla
-[ -e /opt/dehla-pakad/repo ] && echo "/opt/dehla-pakad/repo exists: STOP and review"
-sudo install -d -o dehla -g dehla -m 755 /opt/dehla-pakad /opt/dehla-pakad/releases /opt/dehla-pakad/shared
-sudo install -d -o dehla -g dehla -m 700 /opt/dehla-pakad/shared/backups
-sudo install -d -m 755 /var/www/certbot
-sudo -u dehla git clone <github repo url> /opt/dehla-pakad/repo      # private repo: use a read-only deploy key
+command -v node >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs; }
+# Yarn 1 for the dehla user: corepack if this Node has it, otherwise a global yarn 1
+if command -v corepack >/dev/null; then sudo corepack enable && sudo -u dehla corepack prepare yarn@1.22.22 --activate
+else sudo npm install -g yarn@1.22.22; fi
+sudo -u dehla yarn -v    # must print 1.22.x
 ```
 
-Let the `dehla` user run only these root commands without a password (paths are the real ones on Ubuntu
-24.04; `sudo -n -l /usr/bin/systemctl restart dehla-pakad` as `dehla` must succeed). Create it with
+Let `dehla` run exactly these root commands without a password (real Ubuntu 24.04 paths). Create with
 `sudo visudo -f /etc/sudoers.d/dehla`:
 
 ```
 dehla ALL=(root) NOPASSWD: /usr/bin/systemctl restart dehla-pakad, /usr/bin/systemctl stop dehla-pakad, /usr/bin/systemctl reload nginx, /usr/sbin/nginx -t
 ```
 
-## 2. Secrets (server only, never in git)
+Check: `sudo -u dehla sudo -n -l /usr/bin/systemctl restart dehla-pakad` prints the command.
 
-`/opt/dehla-pakad/shared/backend.env`, owned by `dehla`, `chmod 600`. Start from `backend/.env.example`:
+## 3. Secrets (server only, never in git)
+
+```bash
+sudo test -e /opt/dehla-pakad/shared/backend.env && echo "STOP: backend.env already exists" || \
+  sudo install -o dehla -g dehla -m 600 /dev/null /opt/dehla-pakad/shared/backend.env
+sudo -u dehla nano /opt/dehla-pakad/shared/backend.env      # fill in from backend/.env.example
+```
+
+Keep every line plain `NAME=value` (systemd does not allow comments after a value).
 
 | Variable | Production value |
 |---|---|
 | `MONGO_URL` | Atlas connection string for the production cluster |
-| `DB_NAME` | the production database name (not the development one) |
+| `DB_NAME` | the production database name (letters, digits, `_`, `-`; not the development one) |
 | `CLERK_PUBLISHABLE_KEY` / `CLERK_SECRET_KEY` | **live** keys (`pk_live_…`, `sk_live_…`); live keys put the app in the `live` data scope |
 | `ADMIN_EMAIL` | verified email(s) that become admin on first sign-in |
 | `CORS_ORIGINS` | leave empty (site and API share one domain) or `https://dehlapakad.tech` |
 | `TRUSTED_PROXY_CIDRS` | `127.0.0.1/32` (Nginx connects over loopback) |
-| `VOICE_TURN_URLS`, `VOICE_TURN_SHARED_SECRET` | from section 7 |
+| `VOICE_TURN_URLS`, `VOICE_TURN_SHARED_SECRET` | from section 8 |
 | `API_DOCS` | leave unset (API docs are off for live keys) |
 
-Optional `/opt/dehla-pakad/shared/frontend.env`: only if the API is on a different domain
-(`REACT_APP_BACKEND_URL=https://…`). Without it the site calls `/api` on its own domain.
+Optional `/opt/dehla-pakad/shared/frontend.env` (same `install -m 600` way): only if the API is on a
+different domain (`REACT_APP_BACKEND_URL=https://…`). Without it the site calls `/api` on its own domain.
 
-## 3. Backend service
+## 4. Firewall (before the certificate, which needs port 80)
 
-```bash
-[ -e /etc/systemd/system/dehla-pakad.service ] && echo "a dehla-pakad.service already exists: STOP and review"
-sudo cp --no-clobber /opt/dehla-pakad/repo/deploy/systemd/dehla-pakad.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable dehla-pakad     # starts with the first deploy
-```
-
-Always exactly **one** worker: games, turn timers, matchmaking queues, voice rooms and rate limits live in
-that process. Never add `--workers 2` or run two copies. Port 8000 must be free (deploy.sh refuses to
-continue if something else listens there).
-
-## 4. Nginx and SSL (two steps)
-
-The real site config needs the certificate, so the first certificate is issued with a port-80-only config.
-Neither step touches other sites; `nginx -t` checks everything before any reload.
-
-```bash
-# Step 1: port 80 only (no certificate files referenced)
-[ -e /etc/nginx/sites-available/dehlapakad.tech ] && sudo cp -a /etc/nginx/sites-available/dehlapakad.tech /root/dehlapakad.tech.nginx.bak
-sudo cp /opt/dehla-pakad/repo/deploy/nginx/dehlapakad.tech.http-only.conf /etc/nginx/sites-available/dehlapakad.tech
-sudo ln -sfn /etc/nginx/sites-available/dehlapakad.tech /etc/nginx/sites-enabled/dehlapakad.tech
-sudo nginx -t && sudo systemctl reload nginx
-
-# Certificate by webroot (does not edit any Nginx file); reload Nginx automatically on every renewal
-sudo certbot certonly --webroot -w /var/www/certbot -d dehlapakad.tech -d www.dehlapakad.tech \
-  --deploy-hook "systemctl reload nginx"
-
-# Step 2: the real site
-sudo cp /opt/dehla-pakad/repo/deploy/nginx/dehlapakad.tech.conf /etc/nginx/sites-available/dehlapakad.tech
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot renew --dry-run
-```
-
-If `nginx -t` reports a conflicting `server_name` or a duplicate variable, another site is already
-configured for this domain: stop and review, do not delete the other config. Remove the `[::]` listen
-lines if the VPS has no IPv6.
-
-The `/api/` location carries REST, the game/voice WebSocket (`/api/ws`, upgrade headers, 1-hour read
-timeout) and the Clerk relay (`/api/__clerk`).
-
-## 5. Firewall and MongoDB access
-
-Check what is already allowed and which services other apps need **before** changing anything, and allow
-the real SSH port first (a wrong SSH rule locks you out):
+Look at what is allowed and what other services need **first**, and allow the real SSH port before
+anything else (a wrong SSH rule locks you out). TURN ports are opened later, in section 8.
 
 ```bash
 sudo ufw status verbose
 SSH_PORT=22            # the port found in section 0
 sudo ufw allow "$SSH_PORT/tcp"
 sudo ufw allow 80/tcp && sudo ufw allow 443/tcp
-# only if coturn runs here:
-sudo ufw allow 3478 && sudo ufw allow 5349/tcp && sudo ufw allow 49160:49200/udp
-# keep any rules other services on this box need, then (only if ufw was inactive):
-sudo ufw default deny incoming && sudo ufw default allow outgoing && sudo ufw enable
+# keep any rules other services on this box need; then, only if ufw was inactive:
+sudo ufw status | grep -q "Status: active" || { sudo ufw default deny incoming && sudo ufw default allow outgoing && sudo ufw enable; }
 ```
 
 Open the same ports in Hostinger's panel firewall if it is used. Port 8000 stays closed (Uvicorn listens
-on 127.0.0.1 only). In Atlas, add the VPS public IP to the access list and remove `0.0.0.0/0`. Use a
+on 127.0.0.1 only). In Atlas, add the VPS public IP to the access list and remove `0.0.0.0/0`; use a
 database user limited to the production database.
 
-## 6. Clerk production instance
+## 5. Backend service
+
+```bash
+if [ -e /etc/systemd/system/dehla-pakad.service ]; then echo "STOP: a dehla-pakad.service already exists"; else
+  sudo cp /opt/dehla-pakad/repo/deploy/systemd/dehla-pakad.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable dehla-pakad; fi
+```
+
+It starts with the first deploy. Always exactly **one** worker: games, turn timers, matchmaking queues,
+voice rooms and rate limits live in that process; never add `--workers 2` or run two copies. Port 8000
+must be free (deploy.sh refuses to continue if something else listens there).
+
+## 6. Nginx and SSL (two steps)
+
+Neither step touches other sites. After each `nginx -t`, also check its output for **warnings**: a
+"conflicting server name" is only a warning, `nginx -t` still passes, and Nginx would silently use the
+other site.
+
+```bash
+NGX=/etc/nginx/sites-available/dehlapakad.tech; NGE=/etc/nginx/sites-enabled/dehlapakad.tech
+# keep copies of anything already there (including a plain file in sites-enabled)
+for f in "$NGX" "$NGE"; do [ -e "$f" ] && sudo cp -a "$f" "/root/$(basename "$(dirname "$f")")-dehlapakad.tech.bak"; done
+
+# Step 1: port 80 only (no certificate files referenced)
+sudo cp /opt/dehla-pakad/repo/deploy/nginx/dehlapakad.tech.http-only.conf "$NGX"
+sudo ln -sfn "$NGX" "$NGE"
+sudo nginx -t 2>&1 | tee /tmp/nginx-t.txt; grep -qi "conflicting server name" /tmp/nginx-t.txt && echo "STOP: another site uses this name"
+sudo nginx -t && sudo systemctl reload nginx
+
+# Certificate by webroot (edits no Nginx file); Nginx reloads automatically on every renewal
+sudo certbot certonly --webroot -w /var/www/certbot -d dehlapakad.tech -d www.dehlapakad.tech \
+  --deploy-hook "systemctl reload nginx"
+
+# Step 2: the real site
+sudo cp /opt/dehla-pakad/repo/deploy/nginx/dehlapakad.tech.conf "$NGX"
+sudo nginx -t 2>&1 | tee /tmp/nginx-t.txt; grep -qi "conflicting server name" /tmp/nginx-t.txt && echo "STOP: another site uses this name"
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot renew --dry-run
+```
+
+Remove the `[::]` listen lines if the VPS has no IPv6. The site sends a report-only Content-Security-
+Policy: after the first smoke test, open the browser console; when it shows no CSP reports (the inline
+error-filter script in `index.html` will report until it is moved to a file), switch the header name to
+`Content-Security-Policy`. `/api/` carries REST, the game/voice WebSocket (`/api/ws`, 1-hour read timeout)
+and the Clerk relay (`/api/__clerk`). Text assets are gzip-compressed by this site's server block.
+
+## 7. Clerk production instance
 
 In the Clerk dashboard, create/confirm the production instance for `dehlapakad.tech`:
 
 - Domain `dehlapakad.tech`; **proxy URL `https://dehlapakad.tech/api/__clerk`** (the backend relays Clerk's
-  Frontend API there automatically when it has `pk_live_` keys, so no `clerk.` DNS record is needed).
-  Add the email DNS records (SPF/DKIM) Clerk lists for sending mail from the domain.
+  Frontend API there automatically when it has `pk_live_` keys, so no `clerk.` DNS record is needed). Add
+  the email DNS records (SPF/DKIM) Clerk lists for sending mail from the domain.
 - Allowed origins / redirect URLs for `https://dehlapakad.tech`.
 - Email + password sign-in and verification as in development; email delivery verified.
 - Copy the live keys into `backend.env` only. A production instance has its own users and the app keeps
   `live` data separate from `preview`, so production starts with no players from development.
 
-## 7. Voice relay (TURN)
+## 8. Voice relay (TURN)
 
-Voice works peer to peer with STUN, but players on mobile data or strict networks need a TURN relay.
+Install, then **stop it at once** so it never runs with the default configuration, and open its ports only
+after it is configured:
 
 ```bash
-[ -e /etc/turnserver.conf ] && sudo cp -a /etc/turnserver.conf /root/turnserver.conf.bak   # keep any existing config
+[ -e /etc/turnserver.conf ] && sudo cp -a /etc/turnserver.conf /root/turnserver.conf.bak
 sudo apt install -y coturn
-sudo cp /opt/dehla-pakad/repo/deploy/coturn/turnserver.conf.example /etc/turnserver.conf   # then fill in
-sudo sed -i 's/^#TURNSERVER_ENABLED=1/TURNSERVER_ENABLED=1/' /etc/default/coturn
-sudo install -d -o turnserver -g turnserver /var/log/turnserver /etc/turnserver/certs
+sudo systemctl stop coturn; sudo systemctl disable coturn
+sudo cp /opt/dehla-pakad/repo/deploy/coturn/turnserver.conf.example /etc/turnserver.conf
+sudo nano /etc/turnserver.conf         # external-ip and static-auth-secret (comments only on their own lines)
+sudo install -d -o turnserver -g turnserver /var/log/turnserver
+sudo install -o root -g root -m 755 /opt/dehla-pakad/repo/deploy/coturn/certbot-deploy-hook.sh /etc/letsencrypt/renewal-hooks/deploy/coturn.sh
+sudo RENEWED_LINEAGE=/etc/letsencrypt/live/dehlapakad.tech /etc/letsencrypt/renewal-hooks/deploy/coturn.sh   # first copy of the certificate
+sudo systemctl enable --now coturn && sudo systemctl status coturn --no-pager | head -5
+sudo ufw allow 3478 && sudo ufw allow 5349/tcp && sudo ufw allow 49160:49200/udp
 ```
 
-coturn runs as `turnserver`, which cannot read Let's Encrypt keys. Give it its own copy on every renewal
-with a certbot deploy hook, `/etc/letsencrypt/renewal-hooks/deploy/coturn.sh` (chmod 755):
+Put the same secret in `VOICE_TURN_SHARED_SECRET` and the URLs in `VOICE_TURN_URLS` (see the end of the
+example file), then restart the backend (`sudo systemctl restart dehla-pakad`, outside match hours).
+The hook acts only for this site's certificate and restarts coturn only when it is running.
+
+## 9. Deploy
+
+1. Locally: all tests pass; the tag is pushed (section 1).
+2. On the VPS, put the checkout on the tag (so the scripts that run are that release's scripts), then deploy:
 
 ```bash
-#!/bin/sh
-install -o turnserver -g turnserver -m 640 /etc/letsencrypt/live/dehlapakad.tech/fullchain.pem /etc/turnserver/certs/fullchain.pem
-install -o turnserver -g turnserver -m 600 /etc/letsencrypt/live/dehlapakad.tech/privkey.pem  /etc/turnserver/certs/privkey.pem
-systemctl restart coturn
+sudo -u dehla git -C /opt/dehla-pakad/repo fetch --tags origin
+sudo -u dehla git -C /opt/dehla-pakad/repo checkout --detach v1.0.0
+sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/deploy.sh v1.0.0
 ```
 
-Run it once by hand, point `cert=`/`pkey=` in `/etc/turnserver.conf` at `/etc/turnserver/certs/…`, then
-`sudo systemctl enable --now coturn`. Put the same secret in `VOICE_TURN_SHARED_SECRET` and the URLs in
-`VOICE_TURN_URLS` (see the end of the example file), then restart the backend.
+`deploy.sh`: takes a lock (one deploy/rollback at a time); checks `backend.env`, that `current` is a
+symlink, the tools, every sudo permission, that port 8000 is free or held by this service, and that the
+checkout is clean and exactly at the tag; builds the release (marked `INCOMPLETE` until the build succeeds,
+backend from `requirements-prod.txt`); **refuses to switch while matches or public lobbies are in progress**
+(`active_matches.py`, read-only; override `ALLOW_ACTIVE=1`); takes a verified backup; asks for a final
+confirmation; switches `current`; restarts; and health-checks that the service is active, **runs from the
+new release folder** and answers on `/api/`. On failure it marks the release `FAILED` and switches back
+(on the very first deploy it stops the service instead).
 
-## 8. Deploy
-
-1. Locally: all tests pass, then tag the commit (`git tag v1.0.0`) and push the tag (with approval).
-2. Check Admin > Overview: no matches in progress.
-3. On the VPS: `sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/deploy.sh v1.0.0`
-
-`deploy.sh` first checks, without changing anything: `backend.env` exists, `current` is a symlink (not an
-older deployment's folder), the tools are installed, the sudoers rule works, and port 8000 is free or held
-by this service. Then it backs up the database, builds the release in its own folder (marked
-`INCOMPLETE` until the build succeeds), switches `current`, restarts, and health-checks that the service
-is active, **runs from the new release folder** and answers on `/api/`. If anything fails it marks the
-release `FAILED` and switches back (on the very first deploy, it stops the service instead).
-
-4. Smoke test: open the site, sign in, confirm the green "Online" status (WebSocket), create a private
+3. Smoke test: open the site, sign in, confirm the green "Online" status (WebSocket), create a private
    room, add bots, finish a short bot match, check Admin > System health shows all indexes healthy, and
    `journalctl -u dehla-pakad -n 200` has no errors.
 
-What a restart does to data (by design, safe to repeat): retired role names are rewritten, stake entries
-held for games that never started are refunded, rooms stuck in "starting" return to the lobby, **public
-lobbies are deleted** (their queue is in memory), active games resume from the database, and any medal or
-coin settlement interrupted by a crash is completed exactly once.
+What a restart does (by design, safe to repeat): every WebSocket reconnects after a few seconds (the
+service closes them within 5 s on stop); retired role names are rewritten; stake entries held for games
+that never started are refunded; rooms stuck in "starting" return to the lobby; **public lobbies are
+deleted** (their queue is in memory); active games resume from the database, and a turn whose deadline
+passed during the restart is auto-played — which is why deploys wait for an empty table.
 
-## 9. Rollback
+## 10. Rollback
 
 ```bash
 sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/rollback.sh --list   # releases with ok / FAILED / INCOMPLETE
 sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/rollback.sh /opt/dehla-pakad/releases/<folder>
 ```
 
-Prefer naming the folder. Without one, it picks the newest release that is not current and not marked
-`FAILED`/`INCOMPLETE`, shows it and asks first. Code-only: newer releases add fields, collections and
-indexes that older code ignores, so the database normally stays as it is. Avoid rolling back during stake
-matches.
+Prefer naming the folder; without one it picks the newest release that is not current and not marked
+`FAILED`/`INCOMPLETE`, shows it and asks. Like a deploy it waits for an empty table (`ALLOW_ACTIVE=1` to
+override). If the target does not come up healthy, it is marked `FAILED` and the release that was running
+is restored. Code-only: newer releases add fields, collections and indexes that older code ignores.
 
-Database recovery (only for confirmed corruption): stop the backend; take a fresh dump of the current
-state; restore the chosen archive into a scratch database and check it; then restore into production
-with `--drop`, only for the affected collections, in a maintenance window; start the backend and check
-Admin > System health.
+Database recovery (only for confirmed corruption): stop the backend; take a fresh dump of the current state
+(`backup.sh`); restore the chosen archive into a scratch database and check it; then restore into
+production with `--drop`, limited to the affected collections with `--nsInclude "<db>.<collection>"`, in a
+maintenance window; start the backend and check Admin > System health.
 
-## 10. Backups and restore drill
+## 11. Backups and restore drill
 
-- `deploy.sh` takes a `mongodump` before every deploy; also schedule a daily one:
-  `0 3 * * * /opt/dehla-pakad/repo/deploy/scripts/backup.sh >> /opt/dehla-pakad/shared/backups/backup.log 2>&1`
-  (crontab of `dehla`). Keeps the last 14 archives on the VPS; copy them off the server too.
-- Turn on Atlas backups for the cluster (availability depends on the tier).
-- Restore drill before inviting users: restore the latest archive into a scratch database
-  (`mongorestore --nsFrom "<db>.*" --nsTo "<scratch>.*"`), check it opens, then drop the scratch database.
+- `deploy.sh` takes a verified `mongodump` before every switch. Schedule a daily one in the quietest hour
+  (crontab of `dehla`):
+  `30 4 * * * /opt/dehla-pakad/repo/deploy/scripts/backup.sh >> /opt/dehla-pakad/shared/backups/backup.log 2>&1`
+- A dump of one database is **not** point-in-time: writes during the dump can leave collections slightly
+  out of step. **Atlas cluster snapshots are the primary, consistent backup** — turn them on (availability
+  depends on the tier). The VPS dumps are a secondary copy.
+- Copy the VPS dumps off the server (e.g. `rclone copy /opt/dehla-pakad/shared/backups remote:dehla-backups`
+  from a daily cron); the VPS keeps only the newest 14.
+- Restore drill before inviting users: restore the newest archive into a scratch database
+  (`mongorestore … --nsInclude "<db>.*" --nsFrom "<db>.*" --nsTo "<scratch>.*"`), check it opens, then
+  drop the scratch database.
 
-## 11. Logs and monitoring
+## 12. Logs and monitoring
 
-- Backend: `journalctl -u dehla-pakad -f` (Uvicorn access + app logs; no tokens or secrets are logged).
+- Backend: `journalctl -u dehla-pakad -f`. Uvicorn's access log always shows `127.0.0.1` (Nginx is the
+  client); real client addresses are in the Nginx log and are what the app's rate limits use.
 - Nginx: `/var/log/nginx/access.log`, `error.log` (rotated by logrotate).
 - coturn: `/var/log/turnserver/turn.log`.
 - An external uptime check on `https://dehlapakad.tech/api/` (returns `{"message":"Dehla Pakad API"}`).
