@@ -1,0 +1,32 @@
+# /etc/systemd/system/dehla-pakad.service
+# Dehla Pakad FastAPI backend. Exactly ONE Uvicorn worker: games, timers, matchmaking queues, voice
+# rooms and rate limits live in this process's memory.
+[Unit]
+Description=Dehla Pakad backend (FastAPI / Uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dehla
+Group=dehla
+WorkingDirectory=/opt/dehla-pakad/current/backend
+# Secrets live only in this file on the server (chmod 600, owned by dehla). Never commit it.
+EnvironmentFile=/opt/dehla-pakad/shared/backend.env
+# Loopback only: Nginx is the only way in. --no-proxy-headers: the app itself decides which forwarded
+# addresses to trust (TRUSTED_PROXY_CIDRS), see docs/admin-security-deployment.md.
+ExecStart=/opt/dehla-pakad/current/venv/bin/uvicorn server:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers --log-level info
+Restart=always
+RestartSec=3
+# Give open games a moment to persist on stop.
+TimeoutStopSec=20
+KillSignal=SIGINT
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

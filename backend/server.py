@@ -303,7 +303,28 @@ async def _verify_declared_indexes(database_available):
     return {"status": status, **counts, "items": items}
 
 
-app = FastAPI(title="Dehla Pakad")
+def api_docs_enabled(env=None, flag=None) -> bool:
+    """Interactive API docs (/docs, /redoc, /openapi.json): on for preview, off for live unless API_DOCS=true."""
+    env = ENV if env is None else env
+    flag = os.environ.get("API_DOCS", "") if flag is None else flag
+    if str(flag).strip().lower() in ("1", "true", "yes"):
+        return True
+    if str(flag).strip().lower() in ("0", "false", "no"):
+        return False
+    return env != "live"
+
+
+def cors_settings(raw=None):
+    """Allowed browser origins from CORS_ORIGINS (comma-separated). Unset means no cross-origin access,
+    which is right when the site and /api share one domain; "*" never comes with credentials."""
+    raw = os.environ.get("CORS_ORIGINS", "") if raw is None else raw
+    origins = [o.strip().rstrip("/") for o in str(raw).split(",") if o.strip()]
+    return {"allow_origins": origins, "allow_credentials": "*" not in origins}
+
+
+_DOCS = api_docs_enabled()
+app = FastAPI(title="Dehla Pakad", docs_url="/docs" if _DOCS else None, redoc_url="/redoc" if _DOCS else None,
+              openapi_url="/openapi.json" if _DOCS else None)
 api_router = APIRouter(prefix="/api")
 hub = Hub()
 try:
@@ -2649,10 +2670,13 @@ async def ws_endpoint(ws: WebSocket):
 app.include_router(api_router)
 app.include_router(clerk_router)
 
+_CORS = cors_settings()
+if not _CORS["allow_origins"]:
+    logger.info("CORS_ORIGINS is not set: only same-origin browser requests are accepted")
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_credentials=_CORS["allow_credentials"],
+    allow_origins=_CORS["allow_origins"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

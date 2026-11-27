@@ -46,8 +46,9 @@ MongoDB Atlas for data. It does not depend on any Emergent service, SDK, preview
 
 ## Production
 
-Build the frontend with `REACT_APP_BACKEND_URL` set to the public site URL, serve `frontend/build` with
-Nginx, and run Uvicorn behind Nginx with `/api` proxied (WebSocket upgrade enabled). Keep `.env` files
-out of git. See `docs/admin-security-deployment.md` and `docs/voice-chat.md` for details.
+The full VPS procedure (systemd, Nginx, SSL, Clerk production, TURN, backups, deploy and rollback scripts)
+is in `deploy/README.md`. In short: one Uvicorn worker on 127.0.0.1:8000 behind Nginx, the React build served
+by Nginx on the same domain (the frontend then calls `/api` on its own origin), secrets only in a server-side
+`backend.env`. See also `docs/admin-security-deployment.md` and `docs/voice-chat.md`.
 
 Never deploy without explicit approval (see `AGENTS.md`).

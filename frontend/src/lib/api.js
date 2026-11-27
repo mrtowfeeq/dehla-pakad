@@ -3,7 +3,14 @@ import axios from "axios";
 import { useAuth } from "@clerk/react";
 import { isSessionReplacedError, notifySessionReplaced } from "@/lib/sessionReplaced";
 
-export const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+// The backend's public address. In production the site and its /api are served from the same domain by
+// Nginx, so when REACT_APP_BACKEND_URL is not set the page's own origin is used (never a crash).
+export function resolveBackendUrl(configured, origin) {
+  const value = String(configured || "").trim().replace(/\/+$/, "");
+  return value || String(origin || "").replace(/\/+$/, "");
+}
+export const BACKEND_URL = resolveBackendUrl(process.env.REACT_APP_BACKEND_URL,
+  typeof window !== "undefined" ? window.location.origin : "");
 export const API = `${BACKEND_URL}/api`;
 export const WS_URL = `${BACKEND_URL.replace(/^http/, "ws")}/api/ws`;
 
