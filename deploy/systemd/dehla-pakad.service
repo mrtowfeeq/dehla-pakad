@@ -5,6 +5,9 @@
 Description=Dehla Pakad backend (FastAPI / Uvicorn)
 After=network-online.target
 Wants=network-online.target
+# Stop retrying after 5 failed starts within 2 minutes (e.g. no release is current yet).
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple

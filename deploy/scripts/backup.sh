@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Dump the production database to /opt/dehla-pakad/shared/backups (gzip archive), keeping the newest 14.
+# Dump the production database to /opt/dehla-pakad/shared/backups (gzip archive).
 #
-#   sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/backup.sh
+#   sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/backup.sh [daily|predeploy]     (default: daily)
+#
+# Each kind keeps its own newest copies (daily: 14, predeploy: 10), so frequent deploys never push the
+# daily history out. Output goes to stdout/stderr (the cron line sends it to the journal via logger).
 #
 # Needs MongoDB Database Tools (mongodump, mongorestore). Reads MONGO_URL and DB_NAME from the server's
 # backend.env without printing them; the connection string is passed through a private temp config file,
@@ -22,7 +25,8 @@ set -euo pipefail
 SHARED=/opt/dehla-pakad/shared
 ENV_FILE="$SHARED/backend.env"
 OUT="$SHARED/backups"
-KEEP=14
+KIND="${1:-daily}"
+case "$KIND" in daily) KEEP=14 ;; predeploy) KEEP=10 ;; *) echo "usage: backup.sh [daily|predeploy]" >&2; exit 2 ;; esac
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 # First NAME=value line, without surrounding quotes; empty if absent (never fails on a missing name).
@@ -38,7 +42,7 @@ DB_NAME="$(value DB_NAME)"
 umask 077
 mkdir -p "$OUT"
 CONF="$(mktemp)"
-FILE="$OUT/$DB_NAME-$(date +%Y%m%d-%H%M%S).archive.gz"
+FILE="$OUT/$DB_NAME-$KIND-$(date +%Y%m%d-%H%M%S).archive.gz"
 PART="$FILE.part"
 trap 'rm -f "$CONF" "$PART"' EXIT
 # YAML single-quoted scalar: only a single quote needs escaping (doubled); backslashes stay literal.
@@ -51,4 +55,4 @@ mongorestore --config="$CONF" --gzip --archive="$PART" --dryRun --quiet ||
 mv -f "$PART" "$FILE"
 echo "Backup written and verified: $FILE ($(du -h "$FILE" | cut -f1))"
 
-ls -1t "$OUT"/*.archive.gz 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f --
+ls -1t "$OUT/$DB_NAME-$KIND-"*.archive.gz 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f --

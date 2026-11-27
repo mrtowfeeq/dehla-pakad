@@ -5,7 +5,7 @@
 #   sudo -u dehla git -C /opt/dehla-pakad/repo fetch --tags origin
 #   sudo -u dehla git -C /opt/dehla-pakad/repo checkout --detach v1.0.0
 #   # 2. deploy it:
-#   sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/deploy.sh v1.0.0
+#   sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/deploy.sh v1.0.0 [--allow-active] [--skip-backup]
 #
 # Layout (see deploy/README.md):
 #   /opt/dehla-pakad/repo        git clone used only to fetch releases (checked out at the tag)
@@ -14,14 +14,27 @@
 #   /opt/dehla-pakad/shared/     backend.env (secrets, chmod 600), frontend.env (optional), backups/
 #
 # Release markers: INCOMPLETE = still being built (or the build failed); FAILED = did not pass the health
-# check. rollback.sh never picks either.
+# check; DEPLOYED = was live and passed the health check. rollback.sh only goes back to DEPLOYED releases.
 #
-# Restarting the backend drops every WebSocket for a few seconds, deletes public lobbies and their
-# in-memory queue, and auto-plays a turn whose deadline passes during the restart. So the switch is
-# refused while matches or public lobbies are in progress (override: ALLOW_ACTIVE=1).
+# Restarting the backend drops every WebSocket for a few seconds, deletes public lobbies and the in-memory
+# matchmaking queue, resets rooms that are starting, and auto-plays a turn whose deadline passes during the
+# restart. So the switch is refused while any of these is in progress (checked twice: before the backup,
+# and again right before switching). Overrides are command-line flags only (environment variables are
+# ignored) and each one needs a typed confirmation.
 set -euo pipefail
 
-REF="${1:?usage: deploy.sh <git tag or commit>}"
+usage() { echo "usage: deploy.sh <git tag or commit> [--allow-active] [--skip-backup]" >&2; exit 2; }
+REF=""; ALLOW_ACTIVE_FLAG=0; SKIP_BACKUP_FLAG=0
+for arg in "$@"; do
+  case "$arg" in
+    --allow-active) ALLOW_ACTIVE_FLAG=1 ;;
+    --skip-backup) SKIP_BACKUP_FLAG=1 ;;
+    -*) usage ;;
+    *) [[ -z "$REF" ]] || usage; REF="$arg" ;;
+  esac
+done
+[[ -n "$REF" ]] || usage
+
 BASE=/opt/dehla-pakad
 REPO="$BASE/repo"
 SHARED="$BASE/shared"
@@ -37,6 +50,13 @@ SYSTEMCTL=/usr/bin/systemctl
 NGINX=/usr/sbin/nginx
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
+warn() { echo "!!! WARNING: $*" >&2; }
+
+confirm_exact() {  # $1 = prompt, $2 = the exact text the operator must type
+  local answer
+  read -r -p "$1 Type '$2' to continue: " answer
+  [[ "$answer" == "$2" ]] || fail "not confirmed; nothing was switched"
+}
 
 switch_to() {  # atomically point "current" at a release folder
   ln -sfn "$1" "$BASE/current.new" && mv -Tf "$BASE/current.new" "$BASE/current"
@@ -55,9 +75,28 @@ healthy() {  # the service is active, runs from $1, and answers on the API
   curl -fsS --max-time 3 "http://127.0.0.1:$PORT/api/" >/dev/null
 }
 
+activity_gate() {  # refuse to restart while anything is in progress, unless --allow-active (typed confirmation)
+  local state
+  set +e
+  "$RELEASE/venv/bin/python" "$SCRIPTS/active_matches.py" "$SHARED/backend.env" "$PORT"
+  state=$?
+  set -e
+  [[ $state -eq 0 ]] && return 0
+  local what="matches, lobbies or queued players are in progress"
+  [[ $state -eq 3 ]] || what="it could not be checked whether matches are in progress"
+  if [[ $ALLOW_ACTIVE_FLAG -ne 1 ]]; then
+    fail "$what; the release is built ($RELEASE). Try again later (or see --allow-active in deploy/README.md)."
+  fi
+  warn "$what. --allow-active was given: restarting will interrupt them."
+  confirm_exact "Restart anyway?" "RESTART DURING PLAY"
+}
+
 # ---------- one deploy or rollback at a time ----------
 exec 9>"$BASE/.deploy.lock"
 flock -n 9 || fail "another deploy or rollback is running"
+
+# Old environment-variable overrides are ignored on purpose (they can be inherited by accident).
+[[ -n "${ALLOW_ACTIVE:-}" || -n "${SKIP_BACKUP:-}" ]] && warn "ALLOW_ACTIVE / SKIP_BACKUP environment variables are ignored; use --allow-active / --skip-backup"
 
 # ---------- pre-flight checks (nothing on the live site changes before these pass) ----------
 [[ -f "$SHARED/backend.env" ]] || fail "missing $SHARED/backend.env"
@@ -102,25 +141,25 @@ yarn install --frozen-lockfile --non-interactive
 GENERATE_SOURCEMAP=false yarn build
 [[ -f build/index.html ]] || fail "frontend build failed (release left marked INCOMPLETE: $RELEASE)"
 rm -f "$RELEASE/INCOMPLETE"
+# Built, never live yet: no DEPLOYED marker, so rollback.sh will never pick this folder.
 
-echo "== matches in progress?"
-set +e
-"$RELEASE/venv/bin/python" "$SCRIPTS/active_matches.py" "$SHARED/backend.env"
-state=$?
-set -e
-if [[ $state -eq 3 && "${ALLOW_ACTIVE:-0}" != "1" ]]; then
-  fail "matches or public lobbies are in progress; the release is built ($RELEASE) — try again later, or set ALLOW_ACTIVE=1"
-elif [[ $state -eq 2 && "${ALLOW_ACTIVE:-0}" != "1" ]]; then
-  fail "could not check for matches in progress (database unreachable?); set ALLOW_ACTIVE=1 only if you checked yourself"
-fi
+echo "== matches in progress? (first check)"
+activity_gate
 
 echo "== backup before switching"
-if [[ "${SKIP_BACKUP:-0}" != "1" ]]; then
-  "$SCRIPTS/backup.sh"
+if [[ $SKIP_BACKUP_FLAG -eq 1 ]]; then
+  warn "--skip-backup was given: no database backup will be taken before this deploy."
+  confirm_exact "Continue without a backup?" "NO BACKUP"
+else
+  "$SCRIPTS/backup.sh" predeploy
 fi
 
 read -r -p "Switch the live site to $REF now? [y/N] " ok
-[[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "Cancelled. The built release stays in $RELEASE."; exit 1; }
+[[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "Cancelled. The built release stays in $RELEASE (never live)."; exit 1; }
+
+# The backup and the prompt can take minutes: check again immediately before switching.
+echo "== matches in progress? (final check, right before switching)"
+activity_gate
 
 echo "== switch release"
 PREVIOUS="$(readlink -e "$BASE/current" 2>/dev/null || true)"
@@ -149,13 +188,15 @@ if [[ "$ok" != "1" ]]; then
     [[ $back -eq 1 ]] && echo "previous release is running again" >&2 ||
       echo "WARNING: the previous release did not come back either; check: journalctl -u $SERVICE -n 200" >&2
   else
+    # First deploy: nothing to go back to. Stop the service (its start limit also stops retries at boot).
     rm -f "$BASE/current"
     sudo -n "$SYSTEMCTL" stop "$SERVICE" || true
   fi
   fail "deploy of $REF failed health check (see: journalctl -u $SERVICE -n 200)"
 fi
+date -u +%Y-%m-%dT%H:%M:%SZ > "$RELEASE/DEPLOYED"
 # Graceful reload; refuses to touch Nginx if any site's configuration is invalid.
-if sudo -n "$NGINX" -t; then sudo -n "$SYSTEMCTL" reload nginx; else echo "WARNING: nginx -t failed; Nginx was not reloaded" >&2; fi
+if sudo -n "$NGINX" -t; then sudo -n "$SYSTEMCTL" reload nginx; else warn "nginx -t failed; Nginx was not reloaded"; fi
 
 echo "== prune old releases (keeping $KEEP)"
 CURRENT="$(readlink -e "$BASE/current" || true)"

@@ -2506,6 +2506,30 @@ async def root():
     return {"message": "Dehla Pakad API"}
 
 
+_FORWARDING_HEADERS = ("x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host")
+
+
+def is_direct_loopback(request: Request) -> bool:
+    """True only for a request made on the server itself, straight to Uvicorn (not through Nginx, which
+    always adds forwarding headers). Uvicorn runs with --no-proxy-headers, so the peer address is real."""
+    host = (request.client.host if request.client else "") or ""
+    return host in ("127.0.0.1", "::1") and not any(h in request.headers for h in _FORWARDING_HEADERS)
+
+
+@api_router.get("/internal/activity")
+async def internal_activity(request: Request):
+    """In-memory activity the database cannot show, for deploy.sh before a restart: players waiting in the
+    matchmaking queues, live games and connected players. Counts only; served to the server itself only
+    (Nginx also blocks /api/internal/)."""
+    if not is_direct_loopback(request):
+        raise HTTPException(404, "Not Found")
+    return {
+        "queued_players": len(mm_queue) + sum(len(q) for q in mm_stake_queues.values()),
+        "active_games": sum(1 for g in games.games.values() if g.get("status") == "active"),
+        "connected_players": sum(1 for sockets in hub.sockets.values() if sockets),
+    }
+
+
 # ---------------- websocket ----------------
 async def notify_presence(uid):
     friends = [f["friend_id"] async for f in db.friends.find({"user_id": uid, **IN_ENV}, {"_id": 0})]

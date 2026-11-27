@@ -200,7 +200,7 @@ after it is configured:
 sudo apt install -y coturn
 sudo systemctl stop coturn; sudo systemctl disable coturn
 sudo cp /opt/dehla-pakad/repo/deploy/coturn/turnserver.conf.example /etc/turnserver.conf
-sudo nano /etc/turnserver.conf         # external-ip and static-auth-secret (comments only on their own lines)
+sudo nano /etc/turnserver.conf         # external-ip, static-auth-secret, and VPS_PUBLIC_IP / VPS_PUBLIC_IPV6 in denied-peer-ip (comments only on their own lines)
 sudo install -d -o turnserver -g turnserver /var/log/turnserver
 sudo install -o root -g root -m 755 /opt/dehla-pakad/repo/deploy/coturn/certbot-deploy-hook.sh /etc/letsencrypt/renewal-hooks/deploy/coturn.sh
 sudo RENEWED_LINEAGE=/etc/letsencrypt/live/dehlapakad.tech /etc/letsencrypt/renewal-hooks/deploy/coturn.sh   # first copy of the certificate
@@ -226,12 +226,20 @@ sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/deploy.sh v1.0.0
 `deploy.sh`: takes a lock (one deploy/rollback at a time); checks `backend.env`, that `current` is a
 symlink, the tools, every sudo permission, that port 8000 is free or held by this service, and that the
 checkout is clean and exactly at the tag; builds the release (marked `INCOMPLETE` until the build succeeds,
-backend from `requirements-prod.txt`); **refuses to switch while matches or public lobbies are in progress**
-(`active_matches.py`, read-only; override `ALLOW_ACTIVE=1`); takes a verified backup; asks for a final
-confirmation; switches `current`; restarts; and health-checks that the service is active, **runs from the
-new release folder** and answers on `/api/`. On failure it marks the release `FAILED` and switches back
-(on the very first deploy it stops the service instead).
+backend from `requirements-prod.txt`); checks that nothing is in progress (`active_matches.py`: active
+matches, public lobbies and rooms that are starting from the database, plus players waiting in the
+in-memory matchmaking queue from the running backend's loopback-only `/api/internal/activity`; if it
+cannot check, it refuses); takes a verified backup; asks for confirmation; **checks again right before
+switching** (the backup and the prompt can take minutes); switches `current`; restarts; and health-checks
+that the service is active, **runs from the new release folder** and answers on `/api/`. Only then is the
+release marked `DEPLOYED`. On failure it is marked `FAILED` and the previous release is switched back (on
+the very first deploy the service is stopped instead).
 
+Overrides are command-line flags only, never environment variables (an inherited `ALLOW_ACTIVE` or
+`SKIP_BACKUP` is ignored with a warning), and each needs a typed confirmation:
+
+- `--allow-active`: restart even though play is in progress (type `RESTART DURING PLAY`).
+- `--skip-backup`: no backup before switching (type `NO BACKUP`).
 3. Smoke test: open the site, sign in, confirm the green "Online" status (WebSocket), create a private
    room, add bots, finish a short bot match, check Admin > System health shows all indexes healthy, and
    `journalctl -u dehla-pakad -n 200` has no errors.
@@ -239,8 +247,9 @@ new release folder** and answers on `/api/`. On failure it marks the release `FA
 What a restart does (by design, safe to repeat): every WebSocket reconnects after a few seconds (the
 service closes them within 5 s on stop); retired role names are rewritten; stake entries held for games
 that never started are refunded; rooms stuck in "starting" return to the lobby; **public lobbies are
-deleted** (their queue is in memory); active games resume from the database, and a turn whose deadline
-passed during the restart is auto-played — which is why deploys wait for an empty table.
+deleted** and players waiting in the matchmaking queue are dropped (the queue is in memory); active games
+resume from the database, and a turn whose deadline passed during the restart is auto-played — which is why
+deploys wait for an empty table.
 
 ## 10. Rollback
 
@@ -249,11 +258,12 @@ sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/rollback.sh --list   # releas
 sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/rollback.sh /opt/dehla-pakad/releases/<folder>
 ```
 
-Prefer naming the folder; without one it picks the newest release that is not current and not marked
-`FAILED`/`INCOMPLETE`, shows it and asks. Like a deploy it waits for an empty table (`ALLOW_ACTIVE=1` to
-override). If the target does not come up healthy, it is marked `FAILED` and the release that was running
-is restored. Code-only: newer releases add fields, collections and indexes that older code ignores.
-
+Only releases that were live before (`DEPLOYED`) can be rolled back to; a release that was built but never
+switched to, or that failed, is refused (go forward with `deploy.sh` instead). Without a folder it picks
+the newest earlier live release, shows it and asks. Like a deploy it waits for an empty table and checks
+again right before switching (`--allow-active` plus typing `RESTART DURING PLAY` to override). If the
+target does not come up healthy, it is marked `FAILED` and the release that was running is restored.
+Code-only: newer releases add fields, collections and indexes that older code ignores.
 Database recovery (only for confirmed corruption): stop the backend; take a fresh dump of the current state
 (`backup.sh`); restore the chosen archive into a scratch database and check it; then restore into
 production with `--drop`, limited to the affected collections with `--nsInclude "<db>.<collection>"`, in a
@@ -263,7 +273,12 @@ maintenance window; start the backend and check Admin > System health.
 
 - `deploy.sh` takes a verified `mongodump` before every switch. Schedule a daily one in the quietest hour
   (crontab of `dehla`):
-  `30 4 * * * /opt/dehla-pakad/repo/deploy/scripts/backup.sh >> /opt/dehla-pakad/shared/backups/backup.log 2>&1`
+  `30 4 * * * /opt/dehla-pakad/repo/deploy/scripts/backup.sh daily 2>&1 | logger -t dehla-backup`
+  (read it with `journalctl -t dehla-backup`). Daily and pre-deploy dumps are kept separately (newest 14
+  and 10).
+- Each dump is checked with `gzip -t` and `mongorestore --dryRun` before it counts. That proves the archive is
+  intact and readable by mongorestore; it does **not** prove the documents insert, the indexes rebuild, or
+  that nothing is missing — only the restore drill below proves that.
 - A dump of one database is **not** point-in-time: writes during the dump can leave collections slightly
   out of step. **Atlas cluster snapshots are the primary, consistent backup** — turn them on (availability
   depends on the tier). The VPS dumps are a secondary copy.
