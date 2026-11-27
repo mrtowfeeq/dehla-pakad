@@ -5,7 +5,7 @@
 #   sudo -u dehla git -C /opt/dehla-pakad/repo fetch --tags origin
 #   sudo -u dehla git -C /opt/dehla-pakad/repo checkout --detach v1.0.0
 #   # 2. deploy it:
-#   sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/deploy.sh v1.0.0 [--allow-active] [--skip-backup]
+#   sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/deploy.sh v1.0.0 [--allow-active] [--queue-unknown] [--skip-backup]
 #
 # Layout (see deploy/README.md):
 #   /opt/dehla-pakad/repo        git clone used only to fetch releases (checked out at the tag)
@@ -20,14 +20,21 @@
 # matchmaking queue, resets rooms that are starting, and auto-plays a turn whose deadline passes during the
 # restart. So the switch is refused while any of these is in progress (checked twice: before the backup,
 # and again right before switching). Overrides are command-line flags only (environment variables are
-# ignored) and each one needs a typed confirmation.
+# ignored) and each one needs a typed confirmation:
+#   --allow-active   restart although matches, lobbies or queued players are in progress;
+#   --queue-unknown  the database shows nothing in progress but the running backend cannot report (or
+#                    drain) its matchmaking queue, e.g. the first deploy over a release without the
+#                    activity endpoint. It never overrides matches or lobbies found in the database;
+#   --skip-backup    no backup before switching.
+# A failed database check is never overridden.
 set -euo pipefail
 
-usage() { echo "usage: deploy.sh <git tag or commit> [--allow-active] [--skip-backup]" >&2; exit 2; }
-REF=""; ALLOW_ACTIVE_FLAG=0; SKIP_BACKUP_FLAG=0
+usage() { echo "usage: deploy.sh <git tag or commit> [--allow-active] [--queue-unknown] [--skip-backup]" >&2; exit 2; }
+REF=""; ALLOW_ACTIVE_FLAG=0; QUEUE_UNKNOWN_FLAG=0; SKIP_BACKUP_FLAG=0
 for arg in "$@"; do
   case "$arg" in
     --allow-active) ALLOW_ACTIVE_FLAG=1 ;;
+    --queue-unknown) QUEUE_UNKNOWN_FLAG=1 ;;
     --skip-backup) SKIP_BACKUP_FLAG=1 ;;
     -*) usage ;;
     *) [[ -z "$REF" ]] || usage; REF="$arg" ;;
@@ -78,20 +85,27 @@ healthy() {  # the service is active, runs from $1, and answers on the API
   curl -fsS --max-time 3 "http://127.0.0.1:$PORT/api/" >/dev/null
 }
 
-activity_gate() {  # refuse to restart while anything is in progress, unless --allow-active (typed confirmation)
+activity_gate() {  # refuse to restart while anything is in progress (see the overrides above)
   local state
   set +e
   "$RELEASE/venv/bin/python" "$SCRIPTS/active_matches.py" "$SHARED/backend.env" "$PORT"
   state=$?
   set -e
-  [[ $state -eq 0 ]] && return 0
-  local what="matches, lobbies or queued players are in progress"
-  [[ $state -eq 3 ]] || what="it could not be checked whether matches are in progress"
-  if [[ $ALLOW_ACTIVE_FLAG -ne 1 ]]; then
-    fail "$what; the release is built ($RELEASE). Try again later (or see --allow-active in deploy/README.md)."
-  fi
-  warn "$what. --allow-active was given: restarting will interrupt them."
-  confirm_exact "Restart anyway?" "RESTART DURING PLAY"
+  case $state in
+    0) return 0 ;;
+    3)
+      [[ $ALLOW_ACTIVE_FLAG -eq 1 ]] ||
+        fail "matches, lobbies or queued players are in progress; the release is built ($RELEASE). Try again later (or see --allow-active in deploy/README.md)."
+      warn "matches, lobbies or queued players are in progress. --allow-active was given: restarting will interrupt them."
+      confirm_exact "Restart anyway?" "RESTART DURING PLAY" ;;
+    4)
+      [[ $QUEUE_UNKNOWN_FLAG -eq 1 ]] ||
+        fail "the database shows nothing in progress, but the running backend cannot report its matchmaking queue (an older release?); the release is built ($RELEASE). See --queue-unknown in deploy/README.md."
+      warn "the running backend cannot report its matchmaking queue: players waiting in it will be dropped by the restart."
+      confirm_exact "Restart without knowing the queue?" "QUEUE UNKNOWN" ;;
+    *)
+      fail "it could not be checked whether matches are in progress (database check failed); the release is built ($RELEASE). Fix the check and try again; this is never overridden." ;;
+  esac
 }
 
 # Restart drain: the running backend refuses new queue joins and game starts until it restarts (or the
@@ -102,8 +116,11 @@ drain_backend() {
   curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=$DRAIN_SECONDS" >/dev/null 2>&1 || code=$?
   if [[ $code -eq 0 ]]; then DRAINED=1; sleep 2; return 0; fi  # the pause lets requests already running finish
   [[ $code -eq 7 ]] && return 0  # nothing listening on the port: no backend, nothing can start
-  [[ $ALLOW_ACTIVE_FLAG -eq 1 ]] && { warn "the running backend could not be drained (an older release?); continuing because of --allow-active"; return 0; }
-  fail "the running backend could not be drained before the restart; the release is built ($RELEASE). Try again later."
+  if [[ $QUEUE_UNKNOWN_FLAG -eq 1 ]]; then
+    warn "the running backend could not be drained (an older release?): a match could still start in the seconds before the restart (it would resume from the database afterwards)"
+    return 0
+  fi
+  fail "the running backend could not be drained before the restart; the release is built ($RELEASE). Try again later (an older release without the drain: see --queue-unknown in deploy/README.md)."
 }
 undrain_backend() {  # an aborted deploy lifts the drain at once (it would also expire by itself)
   [[ $DRAINED -eq 1 ]] || return 0

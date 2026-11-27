@@ -228,8 +228,9 @@ symlink, the tools, every sudo permission, that port 8000 is free or held by thi
 checkout is clean and exactly at the tag; builds the release (marked `INCOMPLETE` until the build succeeds,
 backend from `requirements-prod.txt`); checks that nothing is in progress (`active_matches.py`: active
 matches, public lobbies and rooms that are starting from the database, plus players waiting in the
-in-memory matchmaking queue from the running backend's loopback-only `/api/internal/activity`; if it
-cannot check, it refuses); takes a verified backup; asks for confirmation; **drains** the running backend
+in-memory matchmaking queue from the running backend's loopback-only `/api/internal/activity`; anything
+found in the database always counts, even when the queue cannot be read; if the database cannot be
+checked, it refuses with no override); takes a verified backup; asks for confirmation; **drains** the running backend
 (loopback-only `POST /api/internal/drain`: new matchmaking joins and game starts get "The server is
 restarting for an update" until the restart; lifted at once if the script stops before restarting, and
 expires by itself after 5 minutes if the script is killed); **checks again right before switching** (the
@@ -240,15 +241,29 @@ new release is unhealthy, it is marked `FAILED`, `current` is switched back **an
 started again** (on the very first deploy the service is stopped instead).
 
 A backend that is not running at all counts as "no queue and nothing to drain" (no process holds one);
-active matches and lobbies are still checked in the database. A running backend that cannot be drained
-(for example the release before this one, which has no drain endpoint) is refused unless `--allow-active`
-is given, which the activity check already requires in that case.
+active matches and lobbies are still checked in the database. A running backend that cannot report its
+queue or cannot be drained (for example the release before this kit, which has neither endpoint) is
+refused unless `--queue-unknown` is given; that flag only accepts the case where the database shows
+nothing in progress.
 
 Overrides are command-line flags only, never environment variables (an inherited `ALLOW_ACTIVE` or
-`SKIP_BACKUP` is ignored with a warning), and each needs a typed confirmation:
+`SKIP_BACKUP` is ignored with a warning), each covers one case only, and each needs a typed confirmation:
 
-- `--allow-active`: restart even though play is in progress (type `RESTART DURING PLAY`).
+- `--allow-active`: restart even though matches, lobbies or queued players are in progress (type
+  `RESTART DURING PLAY`).
+- `--queue-unknown`: the database shows nothing in progress, but the running backend cannot report or
+  drain its matchmaking queue (type `QUEUE UNKNOWN`). Players waiting in that queue are dropped, and a
+  match could still start in the last seconds before the restart (it resumes from the database
+  afterwards). It never overrides matches or lobbies found in the database.
 - `--skip-backup`: no backup before switching (type `NO BACKUP`).
+- A failed database check is never overridden.
+
+**First deploy over the existing production backend** (a release without this kit's activity and drain
+endpoints): it needs `--queue-unknown`, and that backend cannot be drained. Do it in an announced
+maintenance window, with the old backend's matchmaking unused, and read the counts deploy.sh prints at
+each check (`active_matches=0 public_lobbies=0 starting_rooms=0 queued_players=unknown`). If an older deployment
+runs outside this layout (another port or service), stop it before the first deploy: the scripts cannot
+see it, and two backends on one database would both drive the same active games.
 3. Smoke test: open the site, sign in, confirm the green "Online" status (WebSocket), create a private
    room, add bots, finish a short bot match, check Admin > System health shows all indexes healthy, and
    `journalctl -u dehla-pakad -n 200` has no errors.
@@ -270,7 +285,8 @@ sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/rollback.sh /opt/dehla-pakad/
 Only releases that were live before (`DEPLOYED`) can be rolled back to; a release that was built but never
 switched to, or that failed, is refused (go forward with `deploy.sh` instead). Without a folder it picks
 the newest earlier live release, shows it and asks. Like a deploy it waits for an empty table, drains the
-running backend and checks again right before switching (`--allow-active` plus typing `RESTART DURING PLAY` to override). If the
+running backend and checks again right before switching (overrides as for a deploy: `--allow-active` or
+`--queue-unknown`, each with its typed confirmation). If the
 target does not come up healthy, it is marked `FAILED` and the release that was running is restored. A
 `FAILED` mark is permanent: if the cause was passing (for example a short database outage) and that release
 is known to be good, remove its `FAILED` file by hand before trying it again.

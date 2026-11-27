@@ -2,15 +2,18 @@
 # Switch the live site back to an earlier release (code only; the database is not touched).
 #
 #   sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/rollback.sh --list                 # show releases
-#   sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/rollback.sh [--allow-active]         # newest earlier live one
-#   sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/rollback.sh /opt/dehla-pakad/releases/<folder> [--allow-active]
+#   sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/rollback.sh [--allow-active] [--queue-unknown]   # newest earlier live one
+#   sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/rollback.sh /opt/dehla-pakad/releases/<folder> [--allow-active] [--queue-unknown]
 #
 # Only releases that were live before (marked DEPLOYED by deploy.sh) can be rolled back to; a release that
 # was built but never switched to, or that failed, is refused (to go forward, use deploy.sh). If the target
 # does not come up healthy it is marked FAILED and the release that was running is restored. Database
 # changes made by newer releases are additive (new fields, collections, indexes), which older code ignores.
 # Refused while matches, lobbies or queued players are in progress, unless --allow-active is given and
-# confirmed by typing; environment variables are ignored.
+# confirmed by typing. If the database shows nothing in progress but the running backend cannot report or
+# drain its queue, --queue-unknown (typed confirmation) is needed instead; it never overrides matches or
+# lobbies found in the database. A failed database check is never overridden. Environment variables are
+# ignored.
 set -euo pipefail
 
 BASE=/opt/dehla-pakad
@@ -48,11 +51,12 @@ healthy() {  # the service is active, runs from $1, and answers on the API
 }
 wait_healthy() { for _ in $(seq 1 45); do healthy "$1" && return 0; sleep 1; done; return 1; }
 
-LIST=0; ALLOW_ACTIVE_FLAG=0; ARG=""
+LIST=0; ALLOW_ACTIVE_FLAG=0; QUEUE_UNKNOWN_FLAG=0; ARG=""
 for a in "$@"; do
   case "$a" in
     --list) LIST=1 ;;
     --allow-active) ALLOW_ACTIVE_FLAG=1 ;;
+    --queue-unknown) QUEUE_UNKNOWN_FLAG=1 ;;
     -*) fail "unknown option $a" ;;
     *) [[ -z "$ARG" ]] || fail "only one release folder may be given"; ARG="$a" ;;
   esac
@@ -89,12 +93,22 @@ activity_gate() {
   "$TARGET/venv/bin/python" "$SCRIPTS/active_matches.py" "$SHARED/backend.env" "$PORT"
   state=$?
   set -e
-  [[ $state -eq 0 ]] && return 0
-  [[ $ALLOW_ACTIVE_FLAG -eq 1 ]] || fail "matches, lobbies or queued players are in progress (or the check failed); try again later"
-  warn "--allow-active was given: rolling back will interrupt play in progress."
-  local answer
-  read -r -p "Type 'RESTART DURING PLAY' to continue: " answer
-  [[ "$answer" == "RESTART DURING PLAY" ]] || fail "not confirmed; nothing was switched"
+  local answer phrase
+  case $state in
+    0) return 0 ;;
+    3)
+      [[ $ALLOW_ACTIVE_FLAG -eq 1 ]] || fail "matches, lobbies or queued players are in progress; try again later (or see --allow-active)"
+      warn "--allow-active was given: rolling back will interrupt play in progress."
+      phrase="RESTART DURING PLAY" ;;
+    4)
+      [[ $QUEUE_UNKNOWN_FLAG -eq 1 ]] ||
+        fail "the database shows nothing in progress, but the running backend cannot report its matchmaking queue; see --queue-unknown"
+      warn "the running backend cannot report its matchmaking queue: players waiting in it will be dropped by the restart."
+      phrase="QUEUE UNKNOWN" ;;
+    *) fail "it could not be checked whether matches are in progress (database check failed); fix the check and try again" ;;
+  esac
+  read -r -p "Type '$phrase' to continue: " answer
+  [[ "$answer" == "$phrase" ]] || fail "not confirmed; nothing was switched"
 }
 
 # Restart drain (same as deploy.sh): the running backend refuses new queue joins and game starts until it
@@ -106,8 +120,11 @@ drain_backend() {
   curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=$DRAIN_SECONDS" >/dev/null 2>&1 || code=$?
   if [[ $code -eq 0 ]]; then DRAINED=1; sleep 2; return 0; fi  # the pause lets requests already running finish
   [[ $code -eq 7 ]] && return 0  # nothing listening on the port: no backend, nothing can start
-  [[ $ALLOW_ACTIVE_FLAG -eq 1 ]] && { warn "the running backend could not be drained (an older release?); continuing because of --allow-active"; return 0; }
-  fail "the running backend could not be drained before the restart; nothing was switched. Try again later."
+  if [[ $QUEUE_UNKNOWN_FLAG -eq 1 ]]; then
+    warn "the running backend could not be drained: a match could still start in the seconds before the restart (it would resume from the database afterwards)"
+    return 0
+  fi
+  fail "the running backend could not be drained before the restart; nothing was switched. Try again later (or see --queue-unknown)."
 }
 undrain_backend() {
   [[ $DRAINED -eq 1 ]] || return 0

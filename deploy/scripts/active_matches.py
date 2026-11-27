@@ -12,9 +12,15 @@ Prints only counts, never connection details.
 
     <release>/venv/bin/python deploy/scripts/active_matches.py /opt/dehla-pakad/shared/backend.env [port]
 
-Exit codes: 0 = nothing in progress, 3 = something in progress, 2 = could not check (treat as "do not
-restart"). A backend that is not running has no queue; a running backend that cannot report its queue is
-"could not check".
+Exit codes:
+  0 = nothing in progress;
+  3 = something in progress (any count above zero; the database counts always decide this, even when the
+      queue cannot be read);
+  4 = the database shows nothing in progress, but the running backend cannot report its queue (for example
+      the release before the deploy kit, which has no activity endpoint): players waiting in its queue
+      would be dropped;
+  2 = could not check the database (treat as "do not restart").
+A backend that is not running has no queue (nothing listens, so no process can hold one).
 """
 import json
 import sys
@@ -67,10 +73,12 @@ def main(env_file, port=8000):
     queued = queued_players(port)
     shown = "unknown" if queued is None else queued
     print(f"scope={env} active_matches={games} public_lobbies={lobbies} starting_rooms={starting} queued_players={shown}")
+    if games or lobbies or starting or queued:
+        return 3
     if queued is None:
         print("could not read the matchmaking queue from the running backend", file=sys.stderr)
-        return 2
-    return 3 if games or lobbies or starting or queued else 0
+        return 4
+    return 0
 
 
 if __name__ == "__main__":
