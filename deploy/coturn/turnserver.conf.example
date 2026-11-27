@@ -11,9 +11,10 @@ realm=dehlapakad.tech
 use-auth-secret
 static-auth-secret=REPLACE_WITH_A_LONG_RANDOM_SECRET   # same value as VOICE_TURN_SHARED_SECRET
 
-# TLS for turns: (reuse the site's certificate or issue one for turn.dehlapakad.tech)
-cert=/etc/letsencrypt/live/dehlapakad.tech/fullchain.pem
-pkey=/etc/letsencrypt/live/dehlapakad.tech/privkey.pem
+# TLS for turns: copies of the site certificate readable by the turnserver user, refreshed by the certbot
+# deploy hook in deploy/README.md section 7 (coturn cannot read /etc/letsencrypt/live directly).
+cert=/etc/turnserver/certs/fullchain.pem
+pkey=/etc/turnserver/certs/privkey.pem
 
 # Relay ports (open these UDP ports in the firewall)
 min-port=49160
