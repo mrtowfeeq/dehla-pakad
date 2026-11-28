@@ -5,7 +5,7 @@
 #   sudo -u dehla git -C /opt/dehla-pakad/repo fetch --tags origin
 #   sudo -u dehla git -C /opt/dehla-pakad/repo checkout --detach v1.0.0
 #   # 2. deploy it:
-#   sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/deploy.sh v1.0.0 [--allow-active] [--queue-unknown] [--skip-backup]
+#   sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/deploy.sh v1.0.0 [--first-deploy] [--allow-active] [--queue-unknown] [--skip-backup]
 #
 # Layout (see deploy/README.md):
 #   /opt/dehla-pakad/repo        git clone used only to fetch releases (checked out at the tag)
@@ -23,16 +23,20 @@
 # ignored) and each one needs a typed confirmation:
 #   --allow-active   restart although matches, lobbies or queued players are in progress;
 #   --queue-unknown  the database shows nothing in progress but the running backend cannot report (or
-#                    drain) its matchmaking queue, e.g. the first deploy over a release without the
-#                    activity endpoint. It never overrides matches or lobbies found in the database;
-#   --skip-backup    no backup before switching.
+#                    drain) its matchmaking queue (a running release older than those endpoints).
+#                    It never overrides matches or lobbies found in the database;
+#   --skip-backup    no backup before switching;
+#   --first-deploy   required (only) when no release has been live on this server yet: confirms that every
+#                    older backend of the site (another service, port or host using this database) is
+#                    stopped, which this script cannot see.
 # A failed database check is never overridden.
 set -euo pipefail
 
-usage() { echo "usage: deploy.sh <git tag or commit> [--allow-active] [--queue-unknown] [--skip-backup]" >&2; exit 2; }
-REF=""; ALLOW_ACTIVE_FLAG=0; QUEUE_UNKNOWN_FLAG=0; SKIP_BACKUP_FLAG=0
+usage() { echo "usage: deploy.sh <git tag or commit> [--first-deploy] [--allow-active] [--queue-unknown] [--skip-backup]" >&2; exit 2; }
+REF=""; FIRST_DEPLOY_FLAG=0; ALLOW_ACTIVE_FLAG=0; QUEUE_UNKNOWN_FLAG=0; SKIP_BACKUP_FLAG=0
 for arg in "$@"; do
   case "$arg" in
+    --first-deploy) FIRST_DEPLOY_FLAG=1 ;;
     --allow-active) ALLOW_ACTIVE_FLAG=1 ;;
     --queue-unknown) QUEUE_UNKNOWN_FLAG=1 ;;
     --skip-backup) SKIP_BACKUP_FLAG=1 ;;
@@ -50,9 +54,6 @@ PORT=8000
 STAMP="$(date +%Y%m%d-%H%M%S)"
 RELEASE="$BASE/releases/$STAMP-${REF//\//_}"
 KEEP=5
-# How long the restart drain lasts if the script never gets to the restart (it is lifted at once on a
-# normal abort, and ends with the restart). Long enough for a typed --allow-active confirmation.
-DRAIN_SECONDS=300
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Commands that need root are run with `sudo -n` (never prompt): see the sudoers line in deploy/README.md.
@@ -107,7 +108,7 @@ healthy() {  # the service is active, runs from $1, and answers on the API
 activity_gate() {  # refuse to restart while anything is in progress (see the overrides above)
   local state
   set +e
-  "$RELEASE/venv/bin/python" "$SCRIPTS/active_matches.py" "$SHARED/backend.env" "$PORT"
+  "$RELEASE/venv/bin/python" "$SCRIPTS/active_matches.py" "$SHARED/backend.env" "$PORT" ${DRAIN_ID:+--expect-drain "$DRAIN_ID"}
   state=$?
   set -e
   case $state in
@@ -122,18 +123,69 @@ activity_gate() {  # refuse to restart while anything is in progress (see the ov
         fail "the database shows nothing in progress, but the running backend cannot report its matchmaking queue (an older release?); the release is built ($RELEASE). See --queue-unknown in deploy/README.md."
       warn "the running backend cannot report its matchmaking queue: players waiting in it will be dropped by the restart."
       confirm_exact "Restart without knowing the queue?" "QUEUE UNKNOWN" ;;
+    5)
+      fail "the restart drain lapsed or the backend restarted during the final check; the release is built ($RELEASE). Run it again; this is never overridden." ;;
     *)
       fail "it could not be checked whether matches are in progress (database check failed); the release is built ($RELEASE). Fix the check and try again; this is never overridden." ;;
   esac
 }
 
-# Restart drain: the running backend refuses new queue joins and game starts until it restarts (or the
-# drain expires), so nothing can begin between the final activity check and the restart.
+# Restart drain: the running backend refuses new queue joins, game starts and public-lobby creation until
+# it restarts, so nothing can begin between the final activity check and the restart.
+#   * Lease: each drain lasts DRAIN_SECONDS; a background heartbeat renews it every DRAIN_RENEW_SECONDS
+#     while this script runs, so it cannot lapse during a typed confirmation. The heartbeat checks every
+#     second that this script is still alive, so after a kill -9 it stops within a second and the drain
+#     lapses within DRAIN_SECONDS.
+#   * Proof: the backend names each continuous drain (drain_id; a lapse or a restarted backend gives a new
+#     or no id). The final activity check and a last renewal right before switching must both see the id
+#     this script started, or nothing is switched.
+#   * The heartbeat is stopped (and waited for, so no renewal is in flight) before the restart, so the new
+#     process is never drained; every other exit lifts the drain at once.
+DRAIN_SECONDS=300
+DRAIN_RENEW_SECONDS=60
 DRAINED=0
+DRAIN_ID=""
+HEARTBEAT_PID=""
+HEARTBEAT_STOP="$BASE/.drain-heartbeat.stop"
+drain_request() {  # $1 = seconds (0 lifts the drain); prints the JSON reply
+  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=$1"
+}
+drain_id_of() { sed -n 's/.*"drain_id":"\([0-9a-f]\{1,64\}\)".*/\1/p'; }
+start_drain_heartbeat() {
+  local parent=$$
+  rm -f "$HEARTBEAT_STOP"
+  (
+    n=0
+    while [[ ! -e "$HEARTBEAT_STOP" ]] && kill -0 "$parent" 2>/dev/null; do
+      sleep 1
+      n=$((n + 1))
+      # Re-check right before renewing: never renew for a script that was stopped or killed meanwhile.
+      if [[ $n -ge $DRAIN_RENEW_SECONDS && ! -e "$HEARTBEAT_STOP" ]] && kill -0 "$parent" 2>/dev/null; then
+        n=0
+        drain_request "$DRAIN_SECONDS" >/dev/null 2>&1 || true
+      fi
+    done
+  ) </dev/null >/dev/null 2>&1 &
+  HEARTBEAT_PID=$!
+}
+stop_drain_heartbeat() {  # returns once the heartbeat has exited (no renewal can still be in flight)
+  [[ -n "$HEARTBEAT_PID" ]] || return 0
+  touch "$HEARTBEAT_STOP"
+  wait "$HEARTBEAT_PID" 2>/dev/null || true
+  rm -f "$HEARTBEAT_STOP"
+  HEARTBEAT_PID=""
+}
 drain_backend() {
-  local code=0
-  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=$DRAIN_SECONDS" >/dev/null 2>&1 || code=$?
-  if [[ $code -eq 0 ]]; then DRAINED=1; sleep 2; return 0; fi  # the pause lets requests already running finish
+  local code=0 reply=""
+  reply="$(drain_request "$DRAIN_SECONDS" 2>/dev/null)" || code=$?
+  if [[ $code -eq 0 ]]; then
+    DRAIN_ID="$(printf '%s' "$reply" | drain_id_of)"
+    [[ -n "$DRAIN_ID" ]] || fail "the running backend accepted the drain but reported no drain id; the release is built ($RELEASE)."
+    DRAINED=1
+    start_drain_heartbeat
+    sleep 2  # lets requests already running finish
+    return 0
+  fi
   [[ $code -eq 7 ]] && return 0  # nothing listening on the port: no backend, nothing can start
   if [[ $QUEUE_UNKNOWN_FLAG -eq 1 ]]; then
     warn "the running backend could not be drained (an older release?): a match could still start in the seconds before the restart (it would resume from the database afterwards)"
@@ -141,9 +193,18 @@ drain_backend() {
   fi
   fail "the running backend could not be drained before the restart; the release is built ($RELEASE). Try again later (an older release without the drain: see --queue-unknown in deploy/README.md)."
 }
-undrain_backend() {  # an aborted deploy lifts the drain at once (it would also expire by itself)
+confirm_drain_held() {  # right before switching: the drain started by this script has held without a gap
   [[ $DRAINED -eq 1 ]] || return 0
-  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=0" >/dev/null 2>&1 || true
+  stop_drain_heartbeat
+  local reply
+  reply="$(drain_request "$DRAIN_SECONDS" 2>/dev/null)" || fail "could not renew the restart drain right before switching; the release is built ($RELEASE)."
+  [[ "$(printf '%s' "$reply" | drain_id_of)" == "$DRAIN_ID" ]] ||
+    fail "the restart drain lapsed or the backend restarted since the final check (new players could have started); the release is built ($RELEASE). Run it again."
+}
+undrain_backend() {  # an aborted run lifts the drain at once (it would also expire by itself)
+  stop_drain_heartbeat
+  [[ $DRAINED -eq 1 ]] || return 0
+  drain_request 0 >/dev/null 2>&1 || true
   DRAINED=0
 }
 trap undrain_backend EXIT
@@ -175,7 +236,7 @@ flock -n 9 || fail "another deploy or rollback is running"
 # ---------- pre-flight checks (nothing on the live site changes before these pass) ----------
 [[ -f "$SHARED/backend.env" ]] || fail "missing $SHARED/backend.env"
 [[ -e "$BASE/current" && ! -L "$BASE/current" ]] && fail "$BASE/current exists and is not a symlink (an older deployment?)"
-for tool in git python3.12 yarn curl ss flock mongodump; do command -v "$tool" >/dev/null || fail "$tool is not installed"; done
+for tool in git python3.12 yarn curl ss flock mongodump pgrep; do command -v "$tool" >/dev/null || fail "$tool is not installed"; done
 # A person must confirm the switch: refuse now, before building anything, when there is no terminal.
 { exec 8</dev/tty; } 2>/dev/null || fail "run this from an interactive terminal (no /dev/tty: cron, CI and 'ssh host cmd' without -t cannot confirm)"
 exec 8<&-
@@ -183,6 +244,20 @@ for cmd in "$SYSTEMCTL restart $SERVICE" "$SYSTEMCTL reset-failed $SERVICE" "$SY
   # shellcheck disable=SC2086
   sudo -n -l $cmd >/dev/null 2>&1 || fail "the dehla user may not run 'sudo $cmd' without a password (see deploy/README.md, sudoers)"
 done
+# First deploy on this server (no release was ever live): an older backend of the site may still run
+# elsewhere (another service or port, or another host on this database). This script cannot see it, and
+# two backends on one database would both drive the same active games (and the new one deletes the old
+# one's public lobbies at startup). The operator must confirm it is stopped.
+if [[ ! -L "$BASE/current" ]] && ! compgen -G "$BASE/releases/*/DEPLOYED" >/dev/null; then
+  [[ $FIRST_DEPLOY_FLAG -eq 1 ]] ||
+    fail "no release has been live on this server yet: this is the first deploy. Stop every older backend of the site first, then run again with --first-deploy (see deploy/README.md)."
+  echo "== processes that could be another copy of the backend (all users; check each one):"
+  pgrep -af 'uvicorn|gunicorn|hypercorn|server:app' || echo "   (none found)"
+  warn "first deploy: every older Dehla Pakad backend (on this server and on any other host using this database) must be stopped."
+  confirm_exact "Are all older backends stopped?" "OLD BACKEND STOPPED"
+elif [[ $FIRST_DEPLOY_FLAG -eq 1 ]]; then
+  fail "--first-deploy is only for the first deploy on this server; a release has already been live here"
+fi
 # Port 8000 must be free, or held by this service itself (an old backend there would fool the health check).
 if ss -ltnH "sport = :$PORT" | grep -q . && ! "$SYSTEMCTL" is-active --quiet "$SERVICE"; then
   fail "port $PORT is in use by something other than $SERVICE; stop it first (ss -ltnp 'sport = :$PORT')"
@@ -243,6 +318,7 @@ activity_gate
 
 echo "== switch release"
 PREVIOUS="$(readlink -e "$BASE/current" 2>/dev/null || true)"
+confirm_drain_held
 switch_to "$RELEASE"
 DRAINED=0  # from here the restart ends the drain (a new process always starts undrained)
 if ! restart_service; then

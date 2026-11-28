@@ -36,7 +36,8 @@ def test_activity_counts_queues_games_and_players_and_refuses_everyone_else(monk
     monkeypatch.setattr(server.games, "games", {"g1": {"status": "active"}, "g2": {"status": "finished"}})
     monkeypatch.setattr(server.hub, "sockets", {"u1": {object()}, "u2": set(), "u3": {object(), object()}})
     body = asyncio.run(server.internal_activity(request("127.0.0.1")))
-    assert body == {"queued_players": 3, "active_games": 1, "connected_players": 2, "draining": False}
+    assert body == {"queued_players": 3, "active_games": 1, "connected_players": 2, "draining": False,
+                    "drain_id": None}
     with pytest.raises(HTTPException) as err:
         asyncio.run(server.internal_activity(request("127.0.0.1", {"X-Forwarded-For": "198.51.100.7"})))
     assert err.value.status_code == 404
@@ -56,6 +57,7 @@ def drain(seconds, host="127.0.0.1", headers=None):
 @pytest.fixture
 def undrained(monkeypatch):
     monkeypatch.setattr(server, "drain_until", 0.0)
+    monkeypatch.setattr(server, "drain_id", None)
     monkeypatch.setattr(server, "mm_queue", [])
     monkeypatch.setattr(server, "mm_stake_queues", {"chai": []})
     monkeypatch.setattr(server, "mm_forming", 0)
@@ -69,11 +71,13 @@ def test_drain_is_loopback_only_bounded_and_can_be_lifted(undrained):
             drain(300, host, headers)
         assert err.value.status_code == 404
     assert server.drain_seconds_left() == 0
-    assert drain(300) == {"draining": True, "seconds_left": 300}
-    assert asyncio.run(server.internal_activity(request("127.0.0.1")))["draining"] is True
+    first = drain(300)
+    assert first["draining"] is True and first["seconds_left"] == 300 and len(first["drain_id"]) == 16
+    activity = asyncio.run(server.internal_activity(request("127.0.0.1")))
+    assert activity["draining"] is True and activity["drain_id"] == first["drain_id"]
     assert drain(10_000)["seconds_left"] == server.DRAIN_MAX_SECONDS
-    assert drain(0) == {"draining": False, "seconds_left": 0}
-    assert drain(-5) == {"draining": False, "seconds_left": 0}
+    assert drain(0) == {"draining": False, "seconds_left": 0, "drain_id": None}
+    assert drain(-5) == {"draining": False, "seconds_left": 0, "drain_id": None}
 
 
 def test_drain_expires_by_itself(undrained, monkeypatch):
@@ -228,3 +232,15 @@ def test_no_public_lobby_is_formed_while_draining(undrained, monkeypatch):
     assert asyncio.run(server._try_match("a", "free")) is None
     assert server.mm_queue == ["a", "b", "c", "d"] and server.mm_forming == 0  # still queued, still counted
     assert asyncio.run(server.internal_activity(request("127.0.0.1")))["queued_players"] == 4
+
+
+def test_a_renewal_keeps_the_drain_id_and_a_lapse_or_lift_starts_a_new_one(undrained, monkeypatch):
+    first = drain(60)["drain_id"]
+    assert drain(300)["drain_id"] == first  # renewed before it lapsed: the same continuous drain
+    clock = server.time.monotonic() + 301
+    monkeypatch.setattr(server.time, "monotonic", lambda: clock)
+    assert asyncio.run(server.internal_activity(request("127.0.0.1")))["drain_id"] is None  # lapsed
+    after_lapse = drain(300)["drain_id"]
+    assert after_lapse and after_lapse != first  # the deploy script would see the gap
+    drain(0)
+    assert drain(300)["drain_id"] not in (first, after_lapse)

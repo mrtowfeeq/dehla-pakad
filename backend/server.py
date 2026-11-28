@@ -1525,10 +1525,17 @@ mm_forming = 0
 DRAIN_MAX_SECONDS = 600
 DRAIN_MESSAGE = "The server is restarting for an update. Please try again in a minute."
 drain_until = 0.0
+# Identifies one continuous drain: kept while the drain is renewed before it lapses, new after a lapse or in
+# a new process. deploy.sh / rollback.sh compare it to prove nothing could start since their final check.
+drain_id = None
 
 
 def drain_seconds_left() -> int:
     return max(0, math.ceil(drain_until - time.monotonic()))
+
+
+def current_drain_id():
+    return drain_id if drain_seconds_left() > 0 else None
 
 
 def refuse_if_draining():
@@ -2573,6 +2580,7 @@ async def internal_activity(request: Request):
         "active_games": sum(1 for g in games.games.values() if g.get("status") == "active"),
         "connected_players": sum(1 for sockets in hub.sockets.values() if sockets),
         "draining": drain_seconds_left() > 0,
+        "drain_id": current_drain_id(),
     }
 
 
@@ -2580,16 +2588,19 @@ async def internal_activity(request: Request):
 async def internal_drain(request: Request, seconds: int = 120):
     """deploy.sh / rollback.sh, right before a restart: refuse new queue joins and game starts for
     `seconds` (at most DRAIN_MAX_SECONDS; 0 ends the drain). Served to the server itself only."""
-    global drain_until
+    global drain_until, drain_id
     if not is_direct_loopback(request):
         raise HTTPException(404, "Not Found")
     seconds = max(0, min(int(seconds), DRAIN_MAX_SECONDS))
-    drain_until = time.monotonic() + seconds if seconds else 0.0
     if seconds:
-        logger.warning("Restart drain on for %ss: new queue joins and game starts are refused", seconds)
+        if current_drain_id() is None:  # not draining (never, lifted or lapsed): a new drain begins
+            drain_id = secrets.token_hex(8)
+            logger.warning("Restart drain on for %ss: new queue joins and game starts are refused", seconds)
+        drain_until = time.monotonic() + seconds  # a renewal keeps the same drain_id
     else:
+        drain_until, drain_id = 0.0, None
         logger.info("Restart drain ended")
-    return {"draining": seconds > 0, "seconds_left": drain_seconds_left()}
+    return {"draining": seconds > 0, "seconds_left": drain_seconds_left(), "drain_id": current_drain_id()}
 
 
 # ---------------- websocket ----------------

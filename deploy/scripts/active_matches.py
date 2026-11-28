@@ -11,7 +11,11 @@ Counts what a restart would disturb, in the live/preview scope the server uses:
 
 Prints only counts, never connection details.
 
-    <release>/venv/bin/python deploy/scripts/active_matches.py /opt/dehla-pakad/shared/backend.env [port]
+    <release>/venv/bin/python deploy/scripts/active_matches.py /opt/dehla-pakad/shared/backend.env [port] [--expect-drain ID]
+
+--expect-drain ID (the final check, after deploy.sh / rollback.sh drained the backend): both backend reads
+must report that same continuous drain. A lapsed drain or a backend that restarted in between (it would
+start undrained, with a new or no drain id) is exit 5.
 
 Exit codes:
   0 = nothing in progress;
@@ -20,7 +24,8 @@ Exit codes:
   4 = the database shows nothing in progress, but the running backend cannot report its queue (for example
       the release before the deploy kit, which has no activity endpoint): players waiting in its queue
       would be dropped;
-  2 = could not check the database (treat as "do not restart").
+  2 = could not check the database (treat as "do not restart");
+  5 = --expect-drain was given but that drain is not (or no longer) in force (never overridden).
 A backend that is not running has no queue (nothing listens, so no process can hold one).
 """
 import json
@@ -52,24 +57,24 @@ def database_counts(cfg):
 
 
 def backend_activity(port):
-    """In-memory activity of the running backend: queued (or in-transit) players plus live games.
-    0 if the backend is not running, None if unknown."""
+    """In-memory activity of the running backend: (queued or in-transit players plus live games, drain id).
+    (0, None) if the backend is not running, None if unknown."""
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/internal/activity", timeout=5) as resp:
             body = json.load(resp)
-            return int(body.get("queued_players", 0)) + int(body.get("active_games", 0))
+            return int(body.get("queued_players", 0)) + int(body.get("active_games", 0)), body.get("drain_id")
     except urllib.error.HTTPError:
         return None  # running, but no answer from the endpoint (e.g. an older release): unknown
     except (urllib.error.URLError, ConnectionError, OSError) as exc:
         reason = getattr(exc, "reason", exc)
         if isinstance(reason, ConnectionRefusedError) or isinstance(exc, ConnectionRefusedError):
-            return 0  # nothing listening: no backend, no queue
+            return 0, None  # nothing listening: no backend, no queue
         return None
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, AttributeError):
         return None
 
 
-def main(env_file, port=8000):
+def main(env_file, port=8000, expect_drain=None):
     # The backend is read before AND after the database. Players only move between the two (a queue becomes
     # a public lobby, a dissolved lobby goes back to a queue) with an in-memory transit count covering the
     # gap, so anything that moves while the database is being read is seen by one of the three reads.
@@ -80,7 +85,13 @@ def main(env_file, port=8000):
         print(f"could not check the database: {type(exc).__name__}", file=sys.stderr)
         return 2
     after = backend_activity(port)
-    queued = None if before is None or after is None else max(before, after)
+    queued = None if before is None or after is None else max(before[0], after[0])
+    if expect_drain is not None:
+        ids = [None if read is None else read[1] for read in (before, after)]
+        if ids != [expect_drain, expect_drain]:
+            print("the restart drain is not (or no longer) in force: it lapsed, or the backend restarted",
+                  file=sys.stderr)
+            return 5
     shown = "unknown" if queued is None else queued
     print(f"scope={env} active_matches={games} public_lobbies={lobbies} starting_rooms={starting} backend_in_memory={shown}")
     if games or lobbies or starting or queued:
@@ -92,5 +103,12 @@ def main(env_file, port=8000):
 
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
-    sys.exit(main(args[0] if args else "/opt/dehla-pakad/shared/backend.env", int(args[1]) if len(args) > 1 else 8000))
+    args, expect = sys.argv[1:], None
+    if "--expect-drain" in args:
+        i = args.index("--expect-drain")
+        if i + 1 >= len(args) or not args[i + 1]:
+            sys.exit(2)
+        expect = args[i + 1]
+        del args[i:i + 2]
+    sys.exit(main(args[0] if args else "/opt/dehla-pakad/shared/backend.env",
+                  int(args[1]) if len(args) > 1 else 8000, expect))

@@ -224,6 +224,7 @@ The hook acts only for this site's certificate and restarts coturn only when it 
 sudo -u dehla git -C /opt/dehla-pakad/repo fetch --tags origin
 sudo -u dehla git -C /opt/dehla-pakad/repo checkout --detach v1.0.0
 sudo -u dehla /opt/dehla-pakad/repo/deploy/scripts/deploy.sh v1.0.0
+# the very first deploy on this server: add --first-deploy (see below)
 ```
 
 `deploy.sh`: takes a lock (one deploy/rollback at a time); checks `backend.env`, that `current` is a
@@ -237,8 +238,14 @@ between the two is missed; anything found in the database always counts, even wh
 read; if the database cannot be checked, it refuses with no override); takes a verified backup; asks for
 confirmation; **drains** the running backend (loopback-only `POST /api/internal/drain`: new matchmaking
 joins and game starts get "The server is restarting for an update", and no public lobby is formed, until
-the restart; private rooms can still be created, joined and edited, since they survive a restart; lifted at once if the script stops before restarting, and
-expires by itself after 5 minutes if the script is killed); **checks again right before switching** (the
+the restart; private rooms can still be created, joined and edited, since they survive a restart). The
+drain is a 5-minute lease that a background heartbeat renews every minute while the script runs, so it
+cannot lapse during a typed confirmation; it is lifted at once if the script stops before restarting, and
+if the script is killed outright the heartbeat stops within a second and the drain lapses within 5
+minutes. The backend names each continuous drain (`drain_id`): the final check and a last renewal right
+before switching must both see the drain this run started, so a lapse or a backend that restarted in
+between stops the deploy with nothing switched (never overridden; run it again). **checks again right
+before switching** (the
 backup and the prompt can take minutes, and the drain means nothing new can begin after this check);
 switches `current`; restarts (clearing a systemd start-limit "failed" state first, with `reset-failed`);
 and health-checks that the service is active, **runs from the new release
@@ -266,15 +273,29 @@ stdin: piped input, here-documents, `yes` or environment variables cannot answer
   still start in the last seconds before the restart (it resumes from the database afterwards). It never
   overrides matches, lobbies or starting rooms found in the database, and never a failed database check.
 - `--skip-backup`: no backup before switching (type `NO BACKUP`).
-- A failed database check is never overridden.
+- `--first-deploy`: required, and only accepted, while no release has ever been live on this server
+  (type `OLD BACKEND STOPPED`). It lists processes that could be another copy of the backend
+  (`uvicorn`, `gunicorn`, `hypercorn`, `server:app`, all users) and makes the operator confirm that every
+  older backend of the site is stopped, on this server and on any other host using this database.
+- A failed database check, and a drain that lapsed or was lost, are never overridden.
 
-**First deploy over the existing production backend** (a release without this kit's activity and drain
-endpoints): it needs `--queue-unknown`, and that backend cannot be drained. Do it in an announced
-maintenance window, with the old backend's matchmaking unused, and read the counts deploy.sh prints at
-each check (`active_matches=0 public_lobbies=0 starting_rooms=0 backend_in_memory=unknown`). The old
-backend's matchmaking queue is lost in this restart (it lives only in that process). If an older deployment
-runs outside this layout (another port or service), stop it before the first deploy: the scripts cannot
-see it, and two backends on one database would both drive the same active games.
+**First deploy over the existing production backend** (one that runs outside this layout and has none of
+this kit's activity or drain endpoints): do it in an announced maintenance window.
+
+1. Stop the old backend yourself (and anything else using the production database). Its in-memory
+   matchmaking queue is lost at that moment: everyone waiting has to search again. Matches it was running
+   stay in the database as active, and the new backend resumes them; wait until none are in progress if
+   possible.
+2. Run `deploy.sh <tag> --first-deploy`. It lists processes that look like another backend, asks you to
+   type `OLD BACKEND STOPPED`, and checks the database like every deploy: active matches, public lobbies
+   and starting rooms still block (only `--allow-active` with `RESTART DURING PLAY` overrides them), and a
+   failed database check always stops it. With the old backend stopped nothing answers on port 8000 (the
+   pre-flight refuses anything else listening there), so `--queue-unknown` is not needed and the printed
+   counts end in `backend_in_memory=0`.
+
+The scripts cannot see a backend on another port, service or host: two backends on one database would both
+drive the same active games, and the new one deletes the old one's public lobbies when it starts. That is
+why step 1 is a typed confirmation.
 3. Smoke test: open the site, sign in, confirm the green "Online" status (WebSocket), create a private
    room, add bots, finish a short bot match, check Admin > System health shows all indexes healthy, and
    `journalctl -u dehla-pakad -n 200` has no errors.

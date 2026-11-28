@@ -113,7 +113,7 @@ usable "$TARGET" || { describe "$TARGET" >&2; fail "that release was never live,
 activity_gate() {
   local state
   set +e
-  "$TARGET/venv/bin/python" "$SCRIPTS/active_matches.py" "$SHARED/backend.env" "$PORT"
+  "$TARGET/venv/bin/python" "$SCRIPTS/active_matches.py" "$SHARED/backend.env" "$PORT" ${DRAIN_ID:+--expect-drain "$DRAIN_ID"}
   state=$?
   set -e
   local phrase
@@ -128,30 +128,88 @@ activity_gate() {
         fail "the database shows nothing in progress, but the running backend cannot report its matchmaking queue; see --queue-unknown"
       warn "the running backend cannot report its matchmaking queue: players waiting in it will be dropped by the restart."
       phrase="QUEUE UNKNOWN" ;;
+    5) fail "the restart drain lapsed or the backend restarted during the final check; nothing was switched. Run it again." ;;
     *) fail "it could not be checked whether matches are in progress (database check failed); fix the check and try again" ;;
   esac
   ask_tty "Type '$phrase' to continue: "
   [[ "$TTY_REPLY" == "$phrase" ]] || fail "not confirmed; nothing was switched"
 }
 
-# Restart drain (same as deploy.sh): the running backend refuses new queue joins and game starts until it
-# restarts, is lifted at once if this script stops first, and expires by itself otherwise.
+# Restart drain: the running backend refuses new queue joins, game starts and public-lobby creation until
+# it restarts, so nothing can begin between the final activity check and the restart.
+#   * Lease: each drain lasts DRAIN_SECONDS; a background heartbeat renews it every DRAIN_RENEW_SECONDS
+#     while this script runs, so it cannot lapse during a typed confirmation. The heartbeat checks every
+#     second that this script is still alive, so after a kill -9 it stops within a second and the drain
+#     lapses within DRAIN_SECONDS.
+#   * Proof: the backend names each continuous drain (drain_id; a lapse or a restarted backend gives a new
+#     or no id). The final activity check and a last renewal right before switching must both see the id
+#     this script started, or nothing is switched.
+#   * The heartbeat is stopped (and waited for, so no renewal is in flight) before the restart, so the new
+#     process is never drained; every other exit lifts the drain at once.
 DRAIN_SECONDS=300
+DRAIN_RENEW_SECONDS=60
 DRAINED=0
+DRAIN_ID=""
+HEARTBEAT_PID=""
+HEARTBEAT_STOP="$BASE/.drain-heartbeat.stop"
+drain_request() {  # $1 = seconds (0 lifts the drain); prints the JSON reply
+  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=$1"
+}
+drain_id_of() { sed -n 's/.*"drain_id":"\([0-9a-f]\{1,64\}\)".*/\1/p'; }
+start_drain_heartbeat() {
+  local parent=$$
+  rm -f "$HEARTBEAT_STOP"
+  (
+    n=0
+    while [[ ! -e "$HEARTBEAT_STOP" ]] && kill -0 "$parent" 2>/dev/null; do
+      sleep 1
+      n=$((n + 1))
+      # Re-check right before renewing: never renew for a script that was stopped or killed meanwhile.
+      if [[ $n -ge $DRAIN_RENEW_SECONDS && ! -e "$HEARTBEAT_STOP" ]] && kill -0 "$parent" 2>/dev/null; then
+        n=0
+        drain_request "$DRAIN_SECONDS" >/dev/null 2>&1 || true
+      fi
+    done
+  ) </dev/null >/dev/null 2>&1 &
+  HEARTBEAT_PID=$!
+}
+stop_drain_heartbeat() {  # returns once the heartbeat has exited (no renewal can still be in flight)
+  [[ -n "$HEARTBEAT_PID" ]] || return 0
+  touch "$HEARTBEAT_STOP"
+  wait "$HEARTBEAT_PID" 2>/dev/null || true
+  rm -f "$HEARTBEAT_STOP"
+  HEARTBEAT_PID=""
+}
 drain_backend() {
-  local code=0
-  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=$DRAIN_SECONDS" >/dev/null 2>&1 || code=$?
-  if [[ $code -eq 0 ]]; then DRAINED=1; sleep 2; return 0; fi  # the pause lets requests already running finish
-  [[ $code -eq 7 ]] && return 0  # nothing listening on the port: no backend, nothing can start
-  if [[ $QUEUE_UNKNOWN_FLAG -eq 1 ]]; then
-    warn "the running backend could not be drained: a match could still start in the seconds before the restart (it would resume from the database afterwards)"
+  local code=0 reply=""
+  reply="$(drain_request "$DRAIN_SECONDS" 2>/dev/null)" || code=$?
+  if [[ $code -eq 0 ]]; then
+    DRAIN_ID="$(printf '%s' "$reply" | drain_id_of)"
+    [[ -n "$DRAIN_ID" ]] || fail "the running backend accepted the drain but reported no drain id; nothing was switched."
+    DRAINED=1
+    start_drain_heartbeat
+    sleep 2  # lets requests already running finish
     return 0
   fi
-  fail "the running backend could not be drained before the restart; nothing was switched. Try again later (or see --queue-unknown)."
+  [[ $code -eq 7 ]] && return 0  # nothing listening on the port: no backend, nothing can start
+  if [[ $QUEUE_UNKNOWN_FLAG -eq 1 ]]; then
+    warn "the running backend could not be drained (an older release?): a match could still start in the seconds before the restart (it would resume from the database afterwards)"
+    return 0
+  fi
+  fail "the running backend could not be drained before the restart; nothing was switched. Try again later (an older release without the drain: see --queue-unknown in deploy/README.md)."
 }
-undrain_backend() {
+confirm_drain_held() {  # right before switching: the drain started by this script has held without a gap
   [[ $DRAINED -eq 1 ]] || return 0
-  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=0" >/dev/null 2>&1 || true
+  stop_drain_heartbeat
+  local reply
+  reply="$(drain_request "$DRAIN_SECONDS" 2>/dev/null)" || fail "could not renew the restart drain right before switching; nothing was switched."
+  [[ "$(printf '%s' "$reply" | drain_id_of)" == "$DRAIN_ID" ]] ||
+    fail "the restart drain lapsed or the backend restarted since the final check (new players could have started); nothing was switched. Run it again."
+}
+undrain_backend() {  # an aborted run lifts the drain at once (it would also expire by itself)
+  stop_drain_heartbeat
+  [[ $DRAINED -eq 1 ]] || return 0
+  drain_request 0 >/dev/null 2>&1 || true
   DRAINED=0
 }
 trap undrain_backend EXIT
@@ -167,6 +225,7 @@ drain_backend
 echo "== matches in progress? (right before switching)"
 activity_gate
 
+confirm_drain_held
 switch_to "$TARGET"
 DRAINED=0  # from here the restart ends the drain (a new process always starts undrained)
 if restart_service && wait_healthy "$TARGET"; then
