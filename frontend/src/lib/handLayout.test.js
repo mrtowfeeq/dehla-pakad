@@ -1,4 +1,6 @@
-import { CARD_ASPECT, MIN_CARD_WIDTH, cardBounds, computeHandLayout } from "./handLayout";
+import {
+  CARD_ASPECT, MIN_CARD_WIDTH, cardBounds, computeHandLayout, computeTwoRowHandLayout, twoRowCardBounds, usesTwoRows,
+} from "./handLayout";
 
 // The hand dock is `w-full max-w-4xl mx-auto px-1.5`: up to 896px wide, centred, 6px padding each side.
 const DOCK_MAX = 896;
@@ -82,4 +84,69 @@ test("desktop keeps the original maximum card size and does not over-spread smal
 test("fewer cards re-flow to larger spacing, never wider than the screen", () => {
   const widths = COUNTS.map((count) => place(375, 667, count).layout.total);
   widths.forEach((total) => expect(total).toBeLessThanOrEqual(375 - 12));
+});
+
+// ---------- two-row hand on portrait phones ----------
+// Realistic browser viewports (the address and tool bars take part of the screen) plus full screen sizes.
+const PHONES = [
+  ["320 x 568", 320, 568], ["360 x 640", 360, 640], ["375 x 635 (Safari)", 375, 635], ["390 x 664 (Safari)", 390, 664],
+  ["412 x 780", 412, 780], ["430 x 740", 430, 740], ["375 x 812", 375, 812], ["390 x 844", 390, 844], ["430 x 932", 430, 932],
+];
+
+describe.each(PHONES)("two rows on a %s phone", (_, screenWidth, screenHeight) => {
+  const width = screenWidth - 2 * DOCK_PADDING;
+  test.each([13, 10, 7])("%i cards: balanced rows, on screen, every rank and suit uncovered", (count) => {
+    expect(usesTwoRows({ screenWidth, count })).toBe(true);
+    const two = computeTwoRowHandLayout({ width, viewportHeight: screenHeight, count });
+    const [back, front] = two.rows;
+    expect([back.count, front.count]).toEqual([Math.ceil(count / 2), Math.floor(count / 2)]); // 13 -> 7 + 6
+    expect(back.layout.cardWidth).toBe(front.layout.cardWidth);        // same card size in both rows
+    expect(two.cardWidth).toBeGreaterThanOrEqual(MIN_CARD_WIDTH);
+    expect(two.fontSize).toBeGreaterThanOrEqual(11);
+    const originX = DOCK_PADDING + (width - two.total) / 2;              // the hand is centred in the dock
+    for (let i = 0; i < count; i += 1) {
+      for (const state of ["rest", "hover", "selected"]) {
+        const b = twoRowCardBounds(two, i, state);
+        expect(originX + b.left).toBeGreaterThanOrEqual(0);
+        expect(originX + b.right).toBeLessThanOrEqual(screenWidth);
+        expect(b.top).toBeGreaterThanOrEqual(0);
+        expect(b.bottom).toBeLessThanOrEqual(two.height);
+      }
+    }
+    // Within a row, neighbours overlap but at least half of each card shows.
+    for (const row of two.rows) if (row.count > 1) expect(row.layout.step / row.layout.cardWidth).toBeGreaterThanOrEqual(0.5);
+    // The front row never reaches up into a back-row card's corner index (rank, suit and padding).
+    const indexHeight = two.fontSize * 2.3;
+    for (let j = 0; j < back.count; j += 1) {
+      const b = twoRowCardBounds(two, j);
+      for (let k = back.count; k < count; k += 1) {
+        const f = twoRowCardBounds(two, k);
+        if (f.left < b.right && f.right > b.left) expect(f.top).toBeGreaterThanOrEqual(b.top + indexHeight);
+      }
+    }
+  });
+});
+
+test("only portrait phones with a large hand get two rows", () => {
+  expect(usesTwoRows({ screenWidth: 375, count: 13 })).toBe(true);
+  expect(usesTwoRows({ screenWidth: 639, count: 13 })).toBe(true);
+  expect(usesTwoRows({ screenWidth: 640, count: 13 })).toBe(false);                    // tablets and up
+  expect(usesTwoRows({ screenWidth: 1440, count: 13 })).toBe(false);                   // desktop
+  expect(usesTwoRows({ screenWidth: 375, count: 6 })).toBe(false);                     // small hands: one row
+  expect(usesTwoRows({ screenWidth: 375, count: 13, sideLayout: true })).toBe(false);  // landscape phone layout
+});
+
+test("a two-row hand never squeezes cards below today's single-row size on common phones", () => {
+  for (const [, screenWidth, screenHeight] of PHONES.slice(1)) {
+    const width = screenWidth - 2 * DOCK_PADDING;
+    const one = computeHandLayout({ width, viewportHeight: screenHeight, count: 13 });
+    const two = computeTwoRowHandLayout({ width, viewportHeight: screenHeight, count: 13 });
+    expect(two.cardWidth).toBeGreaterThanOrEqual(one.cardWidth - 5);
+    expect(two.rows[0].layout.step).toBeGreaterThan(one.step);  // and much more of each card shows
+  }
+});
+
+test("the single-row layout is unchanged when no card width is fixed", () => {
+  const base = computeHandLayout({ width: 756, viewportHeight: 1024, count: 13 });
+  expect(computeHandLayout({ width: 756, viewportHeight: 1024, count: 13, cardWidth: undefined })).toEqual(base);
 });

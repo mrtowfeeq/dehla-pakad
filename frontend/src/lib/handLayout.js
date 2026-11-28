@@ -33,7 +33,7 @@ export function maxCardWidth(width) {
  *   width: the hand area's content width in CSS px; viewportHeight: screen height in CSS px;
  *   heightShare: the largest share of the screen height one card may take.
  */
-export function computeHandLayout({ width, viewportHeight = Infinity, count, heightShare = heightShareFor(viewportHeight) }) {
+export function computeHandLayout({ width, viewportHeight = Infinity, count, heightShare = heightShareFor(viewportHeight), cardWidth: fixedWidth }) {
   const n = Math.max(1, Math.floor(count) || 1);
   const available = Math.max(0, width);
   const edgeGap = Math.max(MIN_EDGE_GAP, available * EDGE_GAP_SHARE);
@@ -49,7 +49,8 @@ export function computeHandLayout({ width, viewportHeight = Infinity, count, hei
   const byHeight = Number.isFinite(viewportHeight) && viewportHeight > 0
     ? Math.max(56, viewportHeight * heightShare) / CARD_ASPECT
     : Infinity;
-  const cardWidth = Math.max(MIN_CARD_WIDTH, Math.min(maxCardWidth(available), byWidth, byHeight));
+  // fixedWidth: the two-row phone hand gives both rows the same card size (see computeTwoRowHandLayout).
+  const cardWidth = fixedWidth ?? Math.max(MIN_CARD_WIDTH, Math.min(maxCardWidth(available), byWidth, byHeight));
   const cardHeight = cardWidth * CARD_ASPECT;
 
   const overhang = overhangPerWidth * cardWidth;
@@ -101,4 +102,62 @@ export function cardBounds(layout, i, state = "rest") {
   const xs = corners.map((c) => c[0]);
   const ys = corners.map((c) => c[1]);
   return { left: Math.min(...xs), right: Math.max(...xs), top: Math.min(...ys), bottom: Math.max(...ys) };
+}
+
+// ---------- two-row hand (portrait phones only) ----------
+// A full hand on a narrow phone is split into two fanned rows: the first ceil(n/2) cards in a back (upper)
+// row and the rest in a front (lower) row, e.g. 7 + 6. The front row covers only the lower part of the
+// back row, so every rank and suit stays visible, and each row keeps the fan's own spacing rules.
+export const TWO_ROW_MAX_SCREEN = 640;          // below the sm breakpoint; tablets and desktops keep one row
+export const TWO_ROW_MIN_CARDS = 7;             // smaller hands fit comfortably in one row
+// A card's height as a share of the screen height: small enough that the taller hand leaves the table its
+// room (played cards keep their size on common phones), so cards end up about as wide as in one row.
+export const TWO_ROW_CARD_HEIGHT_SHARE = 0.09;
+export const ROW_REVEAL = 0.46;                 // share of a back-row card left uncovered above the front row
+// ... and never less than the corner index needs: padding 0.3em + rank and suit lines (2em) + a margin
+// for the rows' arc and rotation.
+const INDEX_EM = 2.3;
+const INDEX_MARGIN = 5;
+
+/** Two rows only on portrait phones (the landscape layout has side panels instead) with a large hand. */
+export function usesTwoRows({ screenWidth, count, sideLayout = false }) {
+  return !sideLayout && Number.isFinite(screenWidth) && screenWidth > 0 && screenWidth < TWO_ROW_MAX_SCREEN
+    && count >= TWO_ROW_MIN_CARDS;
+}
+
+/** Which row card i is in, and its index within that row. */
+export function rowOf(twoRow, i) {
+  const [back, front] = twoRow.rows;
+  return i < back.count ? { row: back, rowIndex: 0, j: i } : { row: front, rowIndex: 1, j: i - back.count };
+}
+
+/**
+ * @param {{width: number, viewportHeight?: number, count: number}} input  as for computeHandLayout
+ * Returns both rows' layouts (same card size), each row's horizontal offset (rows are centred) and how far
+ * its cards sit above the bottom of the hand, plus the whole hand's width and height.
+ */
+export function computeTwoRowHandLayout({ width, viewportHeight = Infinity, count }) {
+  const n = Math.max(2, Math.floor(count) || 2);
+  const backCount = Math.ceil(n / 2);
+  const back = computeHandLayout({ width, viewportHeight, count: backCount, heightShare: TWO_ROW_CARD_HEIGHT_SHARE });
+  const front = computeHandLayout({ width, viewportHeight, count: n - backCount, cardWidth: back.cardWidth });
+  const rowOffset = Math.max(back.cardHeight * ROW_REVEAL, back.fontSize * INDEX_EM + INDEX_MARGIN);
+  const total = Math.max(back.total, front.total);
+  return {
+    twoRows: true, count: n, total,
+    height: Math.max(rowOffset + back.height, front.height),
+    cardWidth: back.cardWidth, cardHeight: back.cardHeight, fontSize: back.fontSize, rowOffset,
+    rows: [
+      { layout: back, start: 0, count: backCount, offsetX: (total - back.total) / 2, offsetY: rowOffset },
+      { layout: front, start: backCount, count: n - backCount, offsetX: (total - front.total) / 2, offsetY: 0 },
+    ],
+  };
+}
+
+/** Bounds of card i inside the two-row hand container (origin top-left, y downwards); for tests. */
+export function twoRowCardBounds(twoRow, i, state = "rest") {
+  const { row, j } = rowOf(twoRow, i);
+  const b = cardBounds(row.layout, j, state);
+  const top = twoRow.height - row.offsetY - row.layout.height;  // the row's own box inside the container
+  return { left: b.left + row.offsetX, right: b.right + row.offsetX, top: b.top + top, bottom: b.bottom + top };
 }

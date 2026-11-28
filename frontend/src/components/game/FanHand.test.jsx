@@ -29,6 +29,7 @@ let root;
 let container;
 let contentWidth;
 const originalInnerHeight = window.innerHeight;
+const originalInnerWidth = window.innerWidth;
 
 class FakeResizeObserver {
   constructor(callback) { this.callback = callback; observers.push(this); }
@@ -53,6 +54,7 @@ afterEach(() => {
   container.remove();
   jest.restoreAllMocks();
   Object.defineProperty(window, "innerHeight", { configurable: true, value: originalInnerHeight });
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
   delete global.ResizeObserver;
 });
 
@@ -153,4 +155,60 @@ test("landscape phones (wider than sm, with side panels) also keep the rank and 
     expect(classes).toContain("text-left");
     expect(classes).not.toContain("max-sm:text-left");
   });
+});
+
+function screen(width, height) {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: height });
+  contentWidth = width - 12; // the dock's 6px side padding
+}
+const rowOfCard = (c) => card(c).getAttribute("data-row");
+
+test.each([[320, 568], [360, 640], [375, 667], [390, 664], [430, 932]])(
+  "a %ipx x %ipx phone shows 13 cards in two rows of 7 and 6, inside the hand area", async (width, height) => {
+    screen(width, height);
+    await renderHand(THIRTEEN);
+    expect(fan().getAttribute("data-rows")).toBe("2");
+    expect(THIRTEEN.slice(0, 7).map(rowOfCard)).toEqual(Array(7).fill("0"));
+    expect(THIRTEEN.slice(7).map(rowOfCard)).toEqual(Array(6).fill("1"));
+    const fanWidth = parseFloat(fan().style.width);
+    expect(fanWidth).toBeLessThanOrEqual(width - 12);
+    THIRTEEN.forEach((c) => {
+      const left = parseFloat(card(c).style.left);
+      expect(left).toBeGreaterThanOrEqual(0);
+      expect(left + parseFloat(card(c).style.width)).toBeLessThanOrEqual(fanWidth + 0.001);
+    });
+    // The front (lower) row sits on top of the back row and lower down.
+    const backZ = Math.max(...THIRTEEN.slice(0, 7).map((c) => Number(card(c).style.zIndex)));
+    const frontZ = Math.min(...THIRTEEN.slice(7).map((c) => Number(card(c).style.zIndex)));
+    expect(frontZ).toBeGreaterThan(backZ);
+    expect(parseFloat(card("AS").style.bottom)).toBeGreaterThan(parseFloat(card("2C").style.bottom));
+  });
+
+test.each([["tablet", 768, 1024], ["desktop", 1440, 900]])("%s keeps the single row", async (_, width, height) => {
+  screen(width, height);
+  await renderHand(THIRTEEN);
+  expect(fan().getAttribute("data-rows")).toBe("1");
+  THIRTEEN.forEach((c) => expect(card(c).hasAttribute("data-row")).toBe(false));
+  const expected = computeHandLayout({ width: width - 12, viewportHeight: height, count: 13 });
+  expect(parseFloat(fan().style.width)).toBeCloseTo(expected.total, 3);
+});
+
+test("landscape phones and small phone hands keep the single row", async () => {
+  screen(844, 390);
+  contentWidth = 844 - 2 * 200;
+  await renderHand(THIRTEEN, { sideStart: <span>You</span>, sideEnd: <span>Your turn</span>, sideReserve: 200 });
+  expect(fan().getAttribute("data-rows")).toBe("1");
+  screen(375, 667);
+  await renderHand(THIRTEEN.slice(0, 6));
+  expect(fan().getAttribute("data-rows")).toBe("1");
+});
+
+test("tapping works the same in both rows", async () => {
+  screen(375, 667);
+  const onPlay = jest.fn();
+  await renderHand(THIRTEEN, { onPlay });
+  await act(async () => { card("KS").click(); });   // back row
+  await act(async () => { card("3C").click(); });   // front row
+  expect(onPlay.mock.calls).toEqual([["KS"], ["3C"]]);
 });

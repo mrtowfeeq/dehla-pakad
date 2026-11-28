@@ -8,7 +8,7 @@ import { TurnTimer } from "@/components/game/TurnTimer";
 import { SUIT_SYMBOL, SUIT_NAME, TEAM_NAME, isRed, cardSuit } from "@/lib/api";
 import { sound } from "@/lib/sound";
 import { timerSeatFor } from "@/lib/turnSeat";
-import { cardPose, computeHandLayout } from "@/lib/handLayout";
+import { cardPose, computeHandLayout, computeTwoRowHandLayout, rowOf, usesTwoRows } from "@/lib/handLayout";
 
 export const relOf = (seat, mySeat) => (seat - mySeat + 4) % 4;
 const tl = (t) => (t === 0 ? "a" : "b");
@@ -437,14 +437,21 @@ function viewportHeight() {
   return window.visualViewport?.height || window.innerHeight || Infinity;
 }
 
+function viewportWidth() {
+  return window.visualViewport?.width || window.innerWidth || Infinity;
+}
+
 // Fan hand sized from the measured width AND screen height (see lib/handLayout.js), re-flowing as cards
 // are played, the window resizes or the device rotates.
 // sideStart / sideEnd: optional content placed beside the hand (landscape phones). sideReserve px of
 // padding on each side keeps the measured hand width clear of them, so they can never overlap.
+// Portrait phones with 7+ cards get two fanned rows (e.g. 7 + 6, see computeTwoRowHandLayout); everything
+// else keeps the single row.
 export function FanHand({ cards, legal, myTurn, onPlay, pending, onInvalid, sideStart = null, sideEnd = null, sideReserve = 0 }) {
   const box = useRef(null);
   const [w, setW] = useState(null);
   const [vh, setVh] = useState(viewportHeight);
+  const [vw, setVw] = useState(viewportWidth);
   const [selected, setSelected] = useState(null);
   const [shake, setShake] = useState(null);
   const pointer = useRef("mouse");
@@ -454,7 +461,7 @@ export function FanHand({ cards, legal, myTurn, onPlay, pending, onInvalid, side
     setW(contentWidth(el)); // measure before the first paint instead of guessing a width
     const ro = new ResizeObserver(([e]) => setW(e.contentRect.width));
     ro.observe(el);
-    const onViewport = () => setVh(viewportHeight());
+    const onViewport = () => { setVh(viewportHeight()); setVw(viewportWidth()); };
     window.addEventListener("resize", onViewport);
     window.visualViewport?.addEventListener("resize", onViewport);
     return () => {
@@ -465,7 +472,16 @@ export function FanHand({ cards, legal, myTurn, onPlay, pending, onInvalid, side
   }, []);
   useEffect(() => { if (!cards.includes(selected)) setSelected(null); }, [cards, selected]);
   const layout = computeHandLayout({ width: w ?? 0, viewportHeight: vh, count: cards.length });
-  const { cardWidth: cw, cardHeight: ch, total } = layout;
+  const twoRow = usesTwoRows({ screenWidth: vw, count: cards.length, sideLayout: !!sideReserve })
+    ? computeTwoRowHandLayout({ width: w ?? 0, viewportHeight: vh, count: cards.length })
+    : null;
+  const { cardWidth: cw, cardHeight: ch, total, height } = twoRow || layout;
+  // Where card i goes: its row's layout, its index in that row, the row's offsets and its stacking order.
+  const place = (i) => {
+    if (!twoRow) return { L: layout, j: i, dx: 0, dy: 0, z: i + 1 };
+    const { row, rowIndex, j } = rowOf(twoRow, i);
+    return { L: row.layout, j, dx: row.offsetX, dy: row.offsetY, z: rowIndex * 20 + j + 1, rowIndex };
+  };
   const legalSet = new Set(legal);
   const tap = (c) => {
     if (!myTurn || pending) return;
@@ -480,28 +496,29 @@ export function FanHand({ cards, legal, myTurn, onPlay, pending, onInvalid, side
       style={sideReserve ? { paddingLeft: sideReserve, paddingRight: sideReserve } : undefined} data-testid="player-hand-container">
       {sideStart && <div className="absolute bottom-[max(12px,env(safe-area-inset-bottom))] left-[max(6px,env(safe-area-inset-left))] flex items-center gap-2" style={{ width: sideReserve - 12 }} data-testid="hand-side-start">{sideStart}</div>}
       {sideEnd && <div className="absolute bottom-[max(12px,env(safe-area-inset-bottom))] right-[max(6px,env(safe-area-inset-right))] flex items-center justify-end gap-2" style={{ width: sideReserve - 12 }} data-testid="hand-side-end">{sideEnd}</div>}
-      <div className="relative mx-auto" style={{ width: total, height: layout.height, visibility: w === null ? "hidden" : undefined }}
-        data-testid="player-hand-fan" data-card-width={Math.round(cw)}>
+      <div className="relative mx-auto" style={{ width: total, height, visibility: w === null ? "hidden" : undefined }}
+        data-testid="player-hand-fan" data-card-width={Math.round(cw)} data-rows={twoRow ? 2 : 1}>
         <AnimatePresence initial={false}>
           {cards.map((c, i) => {
             const playable = myTurn && legalSet.has(c) && !pending;
             const isSel = selected === c && playable;
-            const pose = cardPose(layout, i, isSel ? "selected" : "rest");
+            const at = place(i);
+            const pose = cardPose(at.L, at.j, isSel ? "selected" : "rest");
             // A <button> centres its text by default, which would push the rank and suit under the next
             // card on phones (where each card shows only a narrow strip): keep them in the corner there.
             // Portrait phones: below the sm breakpoint. Landscape phones are wider than that, so they are
             // recognised by their side panels (sideReserve, set only for the landscape-phone layout).
             return (
-              <motion.button key={c} type="button" data-sound="none" data-testid={`hand-card-${c}`} data-selected={isSel ? "true" : "false"} aria-disabled={!playable}
+              <motion.button key={c} type="button" data-sound="none" data-testid={`hand-card-${c}`} data-selected={isSel ? "true" : "false"} data-row={at.rowIndex} aria-disabled={!playable}
                 onPointerDown={(e) => { pointer.current = e.pointerType; }} onClick={() => tap(c)}
                 className={`absolute origin-bottom will-change-transform ${sideReserve ? "text-left" : "max-sm:text-left"} ${playable ? "cursor-pointer" : "cursor-default"} ${shake === c ? "shake" : ""}`}
-                style={{ left: pose.left, bottom: layout.bottom, width: cw, height: ch, zIndex: i + 1 }}
+                style={{ left: at.dx + pose.left, bottom: at.L.bottom + at.dy, width: cw, height: ch, zIndex: at.z }}
                 initial={{ y: -200, opacity: 0, rotate: -6 }}
                 animate={{ y: pose.y, opacity: 1, rotate: pose.rotate }}
                 exit={{ y: -90, opacity: 0, transition: { duration: 0.2 } }}
-                whileHover={playable ? { y: cardPose(layout, i, "hover").y } : {}}
+                whileHover={playable ? { y: cardPose(at.L, at.j, "hover").y } : {}}
                 transition={{ type: "spring", stiffness: 260, damping: 24 }}>
-                <PlayingCard card={c} size="fluid" style={{ fontSize: layout.fontSize }}
+                <PlayingCard card={c} size="fluid" style={{ fontSize: at.L.fontSize }}
                   className={`${isSel ? "ring-[3px] ring-amber-300 shadow-[0_0_22px_rgba(251,191,36,.6)]" : playable ? "ring-2 ring-amber-300/70" : ""} ${myTurn && !legalSet.has(c) ? "brightness-[.55]" : ""}`} />
               </motion.button>
             );
