@@ -58,6 +58,7 @@ def drain(seconds, host="127.0.0.1", headers=None):
 def undrained(monkeypatch):
     monkeypatch.setattr(server, "drain_until", 0.0)
     monkeypatch.setattr(server, "drain_id", None)
+    monkeypatch.setattr(server, "_drain_watch_task", None)
     monkeypatch.setattr(server, "mm_queue", [])
     monkeypatch.setattr(server, "mm_stake_queues", {"chai": []})
     monkeypatch.setattr(server, "mm_forming", 0)
@@ -244,3 +245,76 @@ def test_a_renewal_keeps_the_drain_id_and_a_lapse_or_lift_starts_a_new_one(undra
     assert after_lapse and after_lapse != first  # the deploy script would see the gap
     drain(0)
     assert drain(300)["drain_id"] not in (first, after_lapse)
+
+
+def renew(seconds, drain_id):
+    return asyncio.run(server.internal_drain(request("127.0.0.1"), seconds=seconds, renew=drain_id))
+
+
+def test_a_renewal_only_extends_the_same_drain_and_never_starts_one(undrained, monkeypatch):
+    with pytest.raises(HTTPException) as err:  # nothing in force (e.g. a restarted backend)
+        renew(300, "a1b2c3d4e5f60718")
+    assert err.value.status_code == 409 and server.drain_seconds_left() == 0
+    first = drain(60)["drain_id"]
+    assert renew(300, first) == {"draining": True, "seconds_left": 300, "drain_id": first}
+    with pytest.raises(HTTPException) as err:  # someone else's / an older drain
+        renew(300, "ffffffffffffffff")
+    assert err.value.status_code == 409
+    drain(0)
+    with pytest.raises(HTTPException) as err:  # a late renewal after the lift
+        renew(300, first)
+    assert err.value.status_code == 409 and server.drain_seconds_left() == 0
+    first = drain(60)["drain_id"]
+    clock = server.time.monotonic() + 61
+    monkeypatch.setattr(server.time, "monotonic", lambda: clock)
+    with pytest.raises(HTTPException):  # a late renewal after a lapse
+        renew(300, first)
+    assert server.current_drain_id() is None
+
+
+def _fake_matchmaking(monkeypatch):
+    rooms = []
+
+    class Rooms:
+        async def insert_one(self, doc):
+            rooms.append(doc["seats"])
+
+    async def new_code():
+        return f"R{len(rooms)}"
+
+    async def nothing(*a, **k):
+        pass
+
+    monkeypatch.setattr(server, "db", type("DB", (), {"rooms": Rooms()})())
+    monkeypatch.setattr(server, "new_code", new_code)
+    monkeypatch.setattr(server.hub, "send_many", nothing)
+    monkeypatch.setattr(server, "_ready_deadline", nothing)
+    return rooms
+
+
+def test_lifting_a_drain_re_runs_matchmaking_for_players_left_in_the_queue(undrained, monkeypatch):
+    rooms = _fake_matchmaking(monkeypatch)
+
+    async def scenario():
+        await server.internal_drain(request("127.0.0.1"), seconds=300)
+        server.mm_queue[:] = ["a", "b", "c", "d", "e"]  # requeued while draining: no lobby formed
+        assert await server._try_match(tier="free") is None and rooms == []
+        await server.internal_drain(request("127.0.0.1"), seconds=0)  # the deploy aborted
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    assert len(rooms) == 1 and sorted(rooms[0]) == ["a", "b", "c", "d"]
+    assert server.mm_queue == ["e"] and server.mm_forming == 0
+
+
+def test_a_lapsed_drain_also_re_runs_matchmaking(undrained, monkeypatch):
+    rooms = _fake_matchmaking(monkeypatch)
+
+    async def scenario():
+        await server.internal_drain(request("127.0.0.1"), seconds=1)
+        server.mm_stake_queues["chai"][:] = ["a", "b", "c", "d"]
+        await asyncio.sleep(1.4)  # the drain lapses; its watcher resumes matchmaking
+
+    asyncio.run(scenario())
+    assert rooms and sorted(rooms[0]) == ["a", "b", "c", "d"] and server.mm_stake_queues["chai"] == []

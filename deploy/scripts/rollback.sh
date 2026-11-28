@@ -152,22 +152,30 @@ DRAINED=0
 DRAIN_ID=""
 HEARTBEAT_PID=""
 HEARTBEAT_STOP="$BASE/.drain-heartbeat.stop"
-drain_request() {  # $1 = seconds (0 lifts the drain); prints the JSON reply
-  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=$1"
+drain_request() {  # $1 = seconds (0 lifts the drain), $2 = drain id to renew (renew only); prints the reply
+  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=$1${2:+&renew=$2}"
 }
+process_start() { [[ -r "/proc/$1/stat" ]] && sed 's/^.*) //' "/proc/$1/stat" | cut -d' ' -f20; }
 drain_id_of() { sed -n 's/.*"drain_id":"\([0-9a-f]\{1,64\}\)".*/\1/p'; }
 start_drain_heartbeat() {
-  local parent=$$
+  # The script is identified by its PID and its start time, so a reused PID never keeps the heartbeat going.
+  local parent=$$ parent_start
+  parent_start="$(process_start $$ 2>/dev/null || true)"
   rm -f "$HEARTBEAT_STOP"
   (
+    parent_alive() {
+      if [[ -n "$parent_start" ]]; then [[ "$(process_start "$parent" 2>/dev/null)" == "$parent_start" ]]
+      else kill -0 "$parent" 2>/dev/null; fi
+    }
     n=0
-    while [[ ! -e "$HEARTBEAT_STOP" ]] && kill -0 "$parent" 2>/dev/null; do
+    while [[ ! -e "$HEARTBEAT_STOP" ]] && parent_alive; do
       sleep 1
       n=$((n + 1))
       # Re-check right before renewing: never renew for a script that was stopped or killed meanwhile.
-      if [[ $n -ge $DRAIN_RENEW_SECONDS && ! -e "$HEARTBEAT_STOP" ]] && kill -0 "$parent" 2>/dev/null; then
+      if [[ $n -ge $DRAIN_RENEW_SECONDS && ! -e "$HEARTBEAT_STOP" ]] && parent_alive; then
         n=0
-        drain_request "$DRAIN_SECONDS" >/dev/null 2>&1 || true
+        # Renew only: if this drain is no longer in force the backend refuses (409) and starts nothing.
+        drain_request "$DRAIN_SECONDS" "$DRAIN_ID" >/dev/null 2>&1 || true
       fi
     done
   ) </dev/null >/dev/null 2>&1 &
@@ -202,7 +210,8 @@ confirm_drain_held() {  # right before switching: the drain started by this scri
   [[ $DRAINED -eq 1 ]] || return 0
   stop_drain_heartbeat
   local reply
-  reply="$(drain_request "$DRAIN_SECONDS" 2>/dev/null)" || fail "could not renew the restart drain right before switching; nothing was switched."
+  # Renew only: refused (409) if the drain lapsed or the backend restarted since it began.
+  reply="$(drain_request "$DRAIN_SECONDS" "$DRAIN_ID" 2>/dev/null)" || fail "the restart drain could not be renewed right before switching (it lapsed, or the backend restarted); nothing was switched."
   [[ "$(printf '%s' "$reply" | drain_id_of)" == "$DRAIN_ID" ]] ||
     fail "the restart drain lapsed or the backend restarted since the final check (new players could have started); nothing was switched. Run it again."
 }

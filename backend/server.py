@@ -2584,22 +2584,62 @@ async def internal_activity(request: Request):
     }
 
 
+_drain_watch_task = None
+_drain_tasks = set()  # strong references, so a scheduled re-match is never garbage-collected mid-run
+
+
+async def _rematch_queues():
+    """A drain that ended without a restart (lifted by an aborted deploy, or lapsed) held public lobbies
+    back: players requeued meanwhile would otherwise wait until someone else joins. Form them now."""
+    for tier in ["free", *mm_stake_queues]:
+        try:
+            while drain_seconds_left() == 0 and len(_queue_for(tier)) >= 4:
+                await _try_match(tier=tier)  # takes four players off the queue each time
+        except Exception:
+            logger.exception("Matchmaking after the restart drain failed (tier %s)", tier)
+
+
+async def _watch_drain():
+    """Runs while a drain is in force; when it ends without a restart, matchmaking resumes."""
+    global _drain_watch_task
+    try:
+        while (left := drain_seconds_left()) > 0:
+            await asyncio.sleep(min(left, 5))
+        await _rematch_queues()
+    finally:
+        _drain_watch_task = None
+
+
 @api_router.post("/internal/drain")
-async def internal_drain(request: Request, seconds: int = 120):
+async def internal_drain(request: Request, seconds: int = 120, renew: Optional[str] = None):
     """deploy.sh / rollback.sh, right before a restart: refuse new queue joins and game starts for
-    `seconds` (at most DRAIN_MAX_SECONDS; 0 ends the drain). Served to the server itself only."""
-    global drain_until, drain_id
+    `seconds` (at most DRAIN_MAX_SECONDS; 0 ends the drain). Served to the server itself only.
+
+    `renew=<drain_id>` only extends that same drain while it is still in force (409 otherwise): a renewal
+    that arrives late (after a lift, a lapse or in a restarted process) can never start a new drain."""
+    global drain_until, drain_id, _drain_watch_task
     if not is_direct_loopback(request):
         raise HTTPException(404, "Not Found")
     seconds = max(0, min(int(seconds), DRAIN_MAX_SECONDS))
-    if seconds:
+    if renew is not None:
+        if not seconds or current_drain_id() != renew:
+            raise HTTPException(409, "That drain is not in force")
+        drain_until = time.monotonic() + seconds  # same drain_id
+    elif seconds:
         if current_drain_id() is None:  # not draining (never, lifted or lapsed): a new drain begins
             drain_id = secrets.token_hex(8)
             logger.warning("Restart drain on for %ss: new queue joins and game starts are refused", seconds)
-        drain_until = time.monotonic() + seconds  # a renewal keeps the same drain_id
+        drain_until = time.monotonic() + seconds
+        if _drain_watch_task is None:
+            _drain_watch_task = asyncio.create_task(_watch_drain())
     else:
+        was_draining = current_drain_id() is not None
         drain_until, drain_id = 0.0, None
         logger.info("Restart drain ended")
+        if was_draining:
+            task = asyncio.create_task(_rematch_queues())  # at once; the watcher would also do it within 5 s
+            _drain_tasks.add(task)
+            task.add_done_callback(_drain_tasks.discard)
     return {"draining": seconds > 0, "seconds_left": drain_seconds_left(), "drain_id": current_drain_id()}
 
 

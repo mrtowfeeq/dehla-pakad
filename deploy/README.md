@@ -235,7 +235,8 @@ matches, public lobbies and rooms that are starting from the database, plus play
 in-memory matchmaking queue (or moving between it and a public lobby) and live games from the running
 backend's loopback-only `/api/internal/activity`, read before and after the database so nothing moving
 between the two is missed; anything found in the database always counts, even when the queue cannot be
-read; if the database cannot be checked, it refuses with no override); takes a verified backup; asks for
+read; the database is always read from the primary, whatever `MONGO_URL` says, and without a reachable
+primary the check fails; if the database cannot be checked, it refuses with no override); takes a verified backup; asks for
 confirmation; **drains** the running backend (loopback-only `POST /api/internal/drain`: new matchmaking
 joins and game starts get "The server is restarting for an update", and no public lobby is formed, until
 the restart; private rooms can still be created, joined and edited, since they survive a restart). The
@@ -244,7 +245,10 @@ cannot lapse during a typed confirmation; it is lifted at once if the script sto
 if the script is killed outright the heartbeat stops within a second and the drain lapses within 5
 minutes. The backend names each continuous drain (`drain_id`): the final check and a last renewal right
 before switching must both see the drain this run started, so a lapse or a backend that restarted in
-between stops the deploy with nothing switched (never overridden; run it again). **checks again right
+between stops the deploy with nothing switched (never overridden; run it again). Renewals carry that id
+and can only extend that same drain: a late renewal (after a lift, a lapse or in a restarted backend) is
+refused and never starts a new one. When a drain ends without a restart (an aborted run, or a lapse), the
+backend re-runs matchmaking at once for players who were put back in the queue meanwhile. **checks again right
 before switching** (the
 backup and the prompt can take minutes, and the drain means nothing new can begin after this check);
 switches `current`; restarts (clearing a systemd start-limit "failed" state first, with `reset-failed`);
@@ -273,29 +277,34 @@ stdin: piped input, here-documents, `yes` or environment variables cannot answer
   still start in the last seconds before the restart (it resumes from the database afterwards). It never
   overrides matches, lobbies or starting rooms found in the database, and never a failed database check.
 - `--skip-backup`: no backup before switching (type `NO BACKUP`).
-- `--first-deploy`: required, and only accepted, while no release has ever been live on this server
-  (type `OLD BACKEND STOPPED`). It lists processes that could be another copy of the backend
-  (`uvicorn`, `gunicorn`, `hypercorn`, `server:app`, all users) and makes the operator confirm that every
-  older backend of the site is stopped, on this server and on any other host using this database.
+- `--first-deploy`: required, and only accepted, while no release has ever been live on this server.
+  After the build it has you stop the old backend, checks processes and recent database writes, and
+  needs `OLD BACKEND STOPPED` typed (procedure below).
 - A failed database check, and a drain that lapsed or was lost, are never overridden.
 
 **First deploy over the existing production backend** (one that runs outside this layout and has none of
 this kit's activity or drain endpoints): do it in an announced maintenance window.
 
-1. Stop the old backend yourself (and anything else using the production database). Its in-memory
-   matchmaking queue is lost at that moment: everyone waiting has to search again. Matches it was running
-   stay in the database as active, and the new backend resumes them; wait until none are in progress if
-   possible.
-2. Run `deploy.sh <tag> --first-deploy`. It lists processes that look like another backend, asks you to
-   type `OLD BACKEND STOPPED`, and checks the database like every deploy: active matches, public lobbies
-   and starting rooms still block (only `--allow-active` with `RESTART DURING PLAY` overrides them), and a
-   failed database check always stops it. With the old backend stopped nothing answers on port 8000 (the
-   pre-flight refuses anything else listening there), so `--queue-unknown` is not needed and the printed
-   counts end in `backend_in_memory=0`.
+1. Run `deploy.sh <tag> --first-deploy` while the old backend is still serving. The checks and the build
+   run first (several minutes); the site stays up meanwhile.
+2. When it says "first deploy: stop the old backend now", stop every older backend of the site (on this
+   server and on any other host using this database). Its in-memory matchmaking queue is lost at that
+   moment: everyone waiting has to search again. Matches it was running stay "active" in the database and
+   **block the deploy** (only `--allow-active` with `RESTART DURING PLAY` overrides; the new backend then
+   resumes them), so let them finish before you stop it. Press Enter.
+3. The script lists processes that look like another backend (`uvicorn`, `gunicorn`, `hypercorn`,
+   `server:app`, all users) and watches the database for 20 seconds: only a running backend stores games
+   (every move and every turn timer), so any game written in that window stops the deploy ("a backend of
+   this site is still running somewhere"). A database that cannot be checked also stops it.
+4. Type `OLD BACKEND STOPPED`. Port 8000 must now be free. Then the usual checks, backup, confirmation and
+   switch follow. With the old backend stopped nothing answers on port 8000, so `--queue-unknown` is not
+   needed and the printed counts end in `backend_in_memory=0`.
 
-The scripts cannot see a backend on another port, service or host: two backends on one database would both
-drive the same active games, and the new one deletes the old one's public lobbies when it starts. That is
-why step 1 is a typed confirmation.
+Neither the process list nor the database watch can prove that nothing else exists (a backend idle with
+no games writes nothing, and the list cannot see other hosts or, with `hidepid`, other users): the typed
+confirmation is the safeguard, the checks catch the common mistakes. The watch compares the server's
+clock with the timestamps the old backend stored; a backend on another host with a clock far off would be
+missed.
 3. Smoke test: open the site, sign in, confirm the green "Online" status (WebSocket), create a private
    room, add bots, finish a short bot match, check Admin > System health shows all indexes healthy, and
    `journalctl -u dehla-pakad -n 200` has no errors.

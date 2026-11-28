@@ -13,6 +13,11 @@ Prints only counts, never connection details.
 
     <release>/venv/bin/python deploy/scripts/active_matches.py /opt/dehla-pakad/shared/backend.env [port] [--expect-drain ID]
 
+--recent-writes SECONDS (first deploy only, instead of the activity check): counts games stored in the last
+SECONDS seconds. Only a running backend writes games (every move, and turn timers), so after the old backend
+was stopped any recent write means a backend of this site is still live. Prints the count; exit 0 when it
+is zero, 3 when not, 2 when the database cannot be checked.
+
 --expect-drain ID (the final check, after deploy.sh / rollback.sh drained the backend): both backend reads
 must report that same continuous drain. A lapsed drain or a backend that restarted in between (it would
 start undrained, with a new or no drain id) is exit 5.
@@ -30,6 +35,7 @@ A backend that is not running has no queue (nothing listens, so no process can h
 """
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.request
 
@@ -40,12 +46,32 @@ TIMEOUTS = {"serverSelectionTimeoutMS": 10000, "connectTimeoutMS": 10000, "socke
 QUERY_MS = 10000
 
 
-def database_counts(cfg):
+def connect(cfg):
     url, db_name = cfg.get("MONGO_URL"), cfg.get("DB_NAME")
     if not url or not db_name:
         raise LookupError("MONGO_URL / DB_NAME missing")
     env = "live" if str(cfg.get("CLERK_PUBLISHABLE_KEY", "")).startswith("pk_live_") else "preview"
-    with MongoClient(url, appname="dehla-pakad-deploy-check", **TIMEOUTS) as client:
+    return url, db_name, env
+
+
+def recent_game_writes(cfg, seconds):
+    url, db_name, env = connect(cfg)
+    # The server stores updated_at as datetime.now(timezone.utc).isoformat(): same format, so it compares as text.
+    since = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+    with MongoClient(url, appname="dehla-pakad-deploy-check", readPreference="primary", **TIMEOUTS) as client:
+        if not client.admin.command("hello", maxTimeMS=QUERY_MS).get("isWritablePrimary"):
+            raise ConnectionError("not connected to the primary")
+        return env, client[db_name].games.count_documents({"env": env, "updated_at": {"$gte": since}},
+                                                          maxTimeMS=QUERY_MS)
+
+
+def database_counts(cfg):
+    url, db_name, env = connect(cfg)
+    # Always the primary, whatever MONGO_URL says (a secondary can lag and miss a game or room written a
+    # moment ago); without a reachable primary, server selection times out and the check fails (exit 2).
+    with MongoClient(url, appname="dehla-pakad-deploy-check", readPreference="primary", **TIMEOUTS) as client:
+        if not client.admin.command("hello", maxTimeMS=QUERY_MS).get("isWritablePrimary"):
+            raise ConnectionError("not connected to the primary")
         db = client[db_name]
         # Rooms before games: a starting room becomes "playing" only after its game is stored as active,
         # so a start that completes between the two queries is seen by one of them.
@@ -102,8 +128,23 @@ def main(env_file, port=8000, expect_drain=None):
     return 0
 
 
+def main_recent(env_file, seconds):
+    try:
+        env, count = recent_game_writes(dotenv_values(env_file, interpolate=False), seconds)
+    except Exception as exc:  # never print the exception text: it can contain the connection string
+        print(f"could not check the database: {type(exc).__name__}", file=sys.stderr)
+        return 2
+    print(f"scope={env} games_written_last_{seconds}s={count}")
+    return 3 if count else 0
+
+
 if __name__ == "__main__":
     args, expect = sys.argv[1:], None
+    if "--recent-writes" in args:
+        i = args.index("--recent-writes")
+        if i + 1 >= len(args) or not args[i + 1].isdigit() or i == 0:
+            sys.exit(2)
+        sys.exit(main_recent(args[0], int(args[i + 1])))
     if "--expect-drain" in args:
         i = args.index("--expect-drain")
         if i + 1 >= len(args) or not args[i + 1]:

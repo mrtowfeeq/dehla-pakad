@@ -147,22 +147,30 @@ DRAINED=0
 DRAIN_ID=""
 HEARTBEAT_PID=""
 HEARTBEAT_STOP="$BASE/.drain-heartbeat.stop"
-drain_request() {  # $1 = seconds (0 lifts the drain); prints the JSON reply
-  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=$1"
+drain_request() {  # $1 = seconds (0 lifts the drain), $2 = drain id to renew (renew only); prints the reply
+  curl -fsS --max-time 5 -X POST "http://127.0.0.1:$PORT/api/internal/drain?seconds=$1${2:+&renew=$2}"
 }
+process_start() { [[ -r "/proc/$1/stat" ]] && sed 's/^.*) //' "/proc/$1/stat" | cut -d' ' -f20; }
 drain_id_of() { sed -n 's/.*"drain_id":"\([0-9a-f]\{1,64\}\)".*/\1/p'; }
 start_drain_heartbeat() {
-  local parent=$$
+  # The script is identified by its PID and its start time, so a reused PID never keeps the heartbeat going.
+  local parent=$$ parent_start
+  parent_start="$(process_start $$ 2>/dev/null || true)"
   rm -f "$HEARTBEAT_STOP"
   (
+    parent_alive() {
+      if [[ -n "$parent_start" ]]; then [[ "$(process_start "$parent" 2>/dev/null)" == "$parent_start" ]]
+      else kill -0 "$parent" 2>/dev/null; fi
+    }
     n=0
-    while [[ ! -e "$HEARTBEAT_STOP" ]] && kill -0 "$parent" 2>/dev/null; do
+    while [[ ! -e "$HEARTBEAT_STOP" ]] && parent_alive; do
       sleep 1
       n=$((n + 1))
       # Re-check right before renewing: never renew for a script that was stopped or killed meanwhile.
-      if [[ $n -ge $DRAIN_RENEW_SECONDS && ! -e "$HEARTBEAT_STOP" ]] && kill -0 "$parent" 2>/dev/null; then
+      if [[ $n -ge $DRAIN_RENEW_SECONDS && ! -e "$HEARTBEAT_STOP" ]] && parent_alive; then
         n=0
-        drain_request "$DRAIN_SECONDS" >/dev/null 2>&1 || true
+        # Renew only: if this drain is no longer in force the backend refuses (409) and starts nothing.
+        drain_request "$DRAIN_SECONDS" "$DRAIN_ID" >/dev/null 2>&1 || true
       fi
     done
   ) </dev/null >/dev/null 2>&1 &
@@ -197,7 +205,8 @@ confirm_drain_held() {  # right before switching: the drain started by this scri
   [[ $DRAINED -eq 1 ]] || return 0
   stop_drain_heartbeat
   local reply
-  reply="$(drain_request "$DRAIN_SECONDS" 2>/dev/null)" || fail "could not renew the restart drain right before switching; the release is built ($RELEASE)."
+  # Renew only: refused (409) if the drain lapsed or the backend restarted since it began.
+  reply="$(drain_request "$DRAIN_SECONDS" "$DRAIN_ID" 2>/dev/null)" || fail "the restart drain could not be renewed right before switching (it lapsed, or the backend restarted); the release is built ($RELEASE)."
   [[ "$(printf '%s' "$reply" | drain_id_of)" == "$DRAIN_ID" ]] ||
     fail "the restart drain lapsed or the backend restarted since the final check (new players could have started); the release is built ($RELEASE). Run it again."
 }
@@ -244,24 +253,52 @@ for cmd in "$SYSTEMCTL restart $SERVICE" "$SYSTEMCTL reset-failed $SERVICE" "$SY
   # shellcheck disable=SC2086
   sudo -n -l $cmd >/dev/null 2>&1 || fail "the dehla user may not run 'sudo $cmd' without a password (see deploy/README.md, sudoers)"
 done
+# Port 8000 must be free, or held by this service itself (an old backend there would fool the health check).
+port_check() {
+  if ss -ltnH "sport = :$PORT" | grep -q . && ! "$SYSTEMCTL" is-active --quiet "$SERVICE"; then
+    fail "port $PORT is in use by something other than $SERVICE; stop it first (ss -ltnp 'sport = :$PORT')"
+  fi
+}
+
 # First deploy on this server (no release was ever live): an older backend of the site may still run
 # elsewhere (another service or port, or another host on this database). This script cannot see it, and
 # two backends on one database would both drive the same active games (and the new one deletes the old
-# one's public lobbies at startup). The operator must confirm it is stopped.
+# one's public lobbies at startup). The flag is checked now; the old backend keeps serving while the
+# release builds, and is stopped and verified after the build (first_deploy_handover), so the site is
+# down only for the switch.
+FIRST_DEPLOY=0
 if [[ ! -L "$BASE/current" ]] && ! compgen -G "$BASE/releases/*/DEPLOYED" >/dev/null; then
+  FIRST_DEPLOY=1
   [[ $FIRST_DEPLOY_FLAG -eq 1 ]] ||
-    fail "no release has been live on this server yet: this is the first deploy. Stop every older backend of the site first, then run again with --first-deploy (see deploy/README.md)."
-  echo "== processes that could be another copy of the backend (all users; check each one):"
-  pgrep -af 'uvicorn|gunicorn|hypercorn|server:app' || echo "   (none found)"
-  warn "first deploy: every older Dehla Pakad backend (on this server and on any other host using this database) must be stopped."
-  confirm_exact "Are all older backends stopped?" "OLD BACKEND STOPPED"
+    fail "no release has been live on this server yet: this is the first deploy. Run again with --first-deploy (see deploy/README.md)."
 elif [[ $FIRST_DEPLOY_FLAG -eq 1 ]]; then
   fail "--first-deploy is only for the first deploy on this server; a release has already been live here"
 fi
-# Port 8000 must be free, or held by this service itself (an old backend there would fool the health check).
-if ss -ltnH "sport = :$PORT" | grep -q . && ! "$SYSTEMCTL" is-active --quiet "$SERVICE"; then
-  fail "port $PORT is in use by something other than $SERVICE; stop it first (ss -ltnp 'sport = :$PORT')"
-fi
+[[ $FIRST_DEPLOY -eq 1 ]] || port_check  # first deploy: checked after the old backend is stopped
+
+WATCH_SECONDS=20
+first_deploy_handover() {
+  echo "== first deploy: stop the old backend now"
+  echo "   Stop every older Dehla Pakad backend (on this server and on any other host using this database)."
+  echo "   Its in-memory matchmaking queue is lost when it stops. Let matches finish first if you can."
+  ask_tty "Press Enter once they are all stopped... "
+  echo "== processes that could be another copy of the backend (all users; check each one):"
+  pgrep -af 'uvicorn|gunicorn|hypercorn|server:app' || echo "   (none found)"
+  echo "== watching the database for ${WATCH_SECONDS}s: only a running backend stores games"
+  sleep "$WATCH_SECONDS"
+  local state
+  set +e
+  "$RELEASE/venv/bin/python" "$SCRIPTS/active_matches.py" "$SHARED/backend.env" --recent-writes "$WATCH_SECONDS"
+  state=$?
+  set -e
+  case $state in
+    0) ;;
+    3) fail "games were stored in the last ${WATCH_SECONDS}s after you stopped the old backend: a backend of this site is still running somewhere. Find and stop it, then run again (the release is built: $RELEASE)." ;;
+    *) fail "the database could not be checked (the release is built: $RELEASE); this is never overridden." ;;
+  esac
+  confirm_exact "Are all older backends stopped?" "OLD BACKEND STOPPED"
+  port_check
+}
 
 echo "== fetch $REF"
 git -C "$REPO" fetch --tags origin
@@ -294,6 +331,8 @@ GENERATE_SOURCEMAP=false yarn build
 [[ -f build/index.html ]] || fail "frontend build failed (release left marked INCOMPLETE: $RELEASE)"
 rm -f "$RELEASE/INCOMPLETE"
 # Built, never live yet: no DEPLOYED marker, so rollback.sh will never pick this folder.
+
+[[ $FIRST_DEPLOY -eq 1 ]] && first_deploy_handover
 
 echo "== matches in progress? (first check)"
 activity_gate
