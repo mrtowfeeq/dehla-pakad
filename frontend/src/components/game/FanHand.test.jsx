@@ -137,3 +137,20 @@ test("card selection behaviour is unchanged: mouse plays at once; touch selects 
   await act(async () => { target.click(); });
   expect(onPlay).toHaveBeenCalledWith("10S");
 });
+
+test("on phones the rank and suit stay in each card's corner instead of the button's centred text", async () => {
+  await renderHand(THIRTEEN);
+  // Only below the sm breakpoint (640px): tablets and desktops keep their existing look.
+  THIRTEEN.forEach((c) => expect(card(c).className.split(/\s+/)).toContain("max-sm:text-left"));
+});
+
+test("landscape phones (wider than sm, with side panels) also keep the rank and suit in the corner", async () => {
+  contentWidth = 844 - 2 * 200;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 390 });
+  await renderHand(THIRTEEN, { sideStart: <span>You</span>, sideEnd: <span>Your turn</span>, sideReserve: 200 });
+  THIRTEEN.forEach((c) => {
+    const classes = card(c).className.split(/\s+/);
+    expect(classes).toContain("text-left");
+    expect(classes).not.toContain("max-sm:text-left");
+  });
+});

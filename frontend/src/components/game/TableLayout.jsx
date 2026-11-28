@@ -487,10 +487,14 @@ export function FanHand({ cards, legal, myTurn, onPlay, pending, onInvalid, side
             const playable = myTurn && legalSet.has(c) && !pending;
             const isSel = selected === c && playable;
             const pose = cardPose(layout, i, isSel ? "selected" : "rest");
+            // A <button> centres its text by default, which would push the rank and suit under the next
+            // card on phones (where each card shows only a narrow strip): keep them in the corner there.
+            // Portrait phones: below the sm breakpoint. Landscape phones are wider than that, so they are
+            // recognised by their side panels (sideReserve, set only for the landscape-phone layout).
             return (
               <motion.button key={c} type="button" data-sound="none" data-testid={`hand-card-${c}`} data-selected={isSel ? "true" : "false"} aria-disabled={!playable}
                 onPointerDown={(e) => { pointer.current = e.pointerType; }} onClick={() => tap(c)}
-                className={`absolute origin-bottom will-change-transform ${playable ? "cursor-pointer" : "cursor-default"} ${shake === c ? "shake" : ""}`}
+                className={`absolute origin-bottom will-change-transform ${sideReserve ? "text-left" : "max-sm:text-left"} ${playable ? "cursor-pointer" : "cursor-default"} ${shake === c ? "shake" : ""}`}
                 style={{ left: pose.left, bottom: layout.bottom, width: cw, height: ch, zIndex: i + 1 }}
                 initial={{ y: -200, opacity: 0, rotate: -6 }}
                 animate={{ y: pose.y, opacity: 1, rotate: pose.rotate }}
